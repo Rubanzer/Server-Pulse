@@ -1,0 +1,85 @@
+@import "tailwindcss";
+
+/* `dark:` follows the resolved theme (data-theme is set before paint by the script in layout.tsx) */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+@theme {
+  --font-sans: var(--font-plex), ui-sans-serif, system-ui, sans-serif;
+  --font-cond: var(--font-plex-cond), var(--font-plex), ui-sans-serif, sans-serif;
+  --font-mono: ui-monospace, "Cascadia Code", Menlo, monospace;
+
+  --color-paper: #eef2f6;
+  --color-surface: #ffffff;
+  --color-ink: #13202f;
+  --color-muted: #566578;
+  --color-line: #d5dde7;
+  --color-signal: #2457d6;
+  --color-on-signal: #ffffff;
+  --color-signal-2: #0f8a7e;
+  --color-signal-3: #9a5d00;
+  --color-ok: #1d7a46;
+  --color-warn: #9a5d00;
+  --color-crit: #c2362b;
+}
+
+:root[data-theme="dark"] {
+  --color-paper: #0e1828;
+  --color-surface: #15233a;
+  --color-ink: #e3eaf3;
+  --color-muted: #97a8bd;
+  --color-line: #26364f;
+  --color-signal: #7aa2ff;
+  --color-on-signal: #0e1828;
+  --color-signal-2: #4fc7b8;
+  --color-signal-3: #f0b44c;
+  --color-ok: #5fcf8f;
+  --color-warn: #f0b44c;
+  --color-crit: #ff7b6e;
+  color-scheme: dark;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-feature-settings: "tnum" 1;
+  overflow-x: hidden;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-signal);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation: none !important;
+    transition: none !important;
+  }
+}
+
+/* Recharts: keep axis text in the UI palette */
+.recharts-cartesian-axis-tick-value {
+  fill: var(--color-muted);
+  font-size: 11px;
+}
+.recharts-cartesian-grid line {
+  stroke: var(--color-line);
+}
+
+/* hide scrollbars on the phone nav strip, it still scrolls */
+.no-scrollbar {
+  scrollbar-width: none;
+}
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
