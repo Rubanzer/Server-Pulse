@@ -1,65 +1,78 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { DEFS, type Metric } from "@/lib/charts";
 
-export const BACKFILL_EVENT = "sp:backfill";
+export const CATCH_UP_EVENT = "sp:catch-up";
 
-/** Start a backfill for these metrics from anywhere (Settings button). */
-export const requestBackfill = (metrics: Metric[]) => window.dispatchEvent(new CustomEvent(BACKFILL_EVENT, { detail: metrics }));
+/** Start copying missing history now, from anywhere (Settings button). */
+export const requestCatchUp = () => window.dispatchEvent(new Event(CATCH_UP_EVENT));
+
+const CHECKED_KEY = "sp-catch-up-checked";
+const CHECK_EVERY_MS = 10 * 60_000;
 
 /**
- * HIS-2: runs the 30-day import one metric per request, in sequence, with progress.
- * Starts on its own for the owner when metrics are still pending.
+ * HIS-2: when the dashboard is behind the server (first connection, or after the internet, tunnel or
+ * dashboard was down), copy the missing history in budgeted steps while the owner has a page open,
+ * instead of waiting for the nightly sync. Checks at most every 10 minutes per tab.
  */
 export function BackfillRunner() {
-  const [state, setState] = useState<{ done: number; total: number; current?: Metric; errors: string[] } | null>(null);
+  const [state, setState] = useState<{ syncedTo: number | null; done: boolean; error?: string } | null>(null);
   const running = useRef(false);
 
   useEffect(() => {
-    async function run(metrics: Metric[]) {
-      if (running.current || !metrics.length) return;
+    async function run() {
+      if (running.current) return;
       running.current = true;
-      const errors: string[] = [];
-      for (let i = 0; i < metrics.length; i++) {
-        const m = metrics[i]!;
-        setState({ done: i, total: metrics.length, current: m, errors: [...errors] });
-        const r = await fetch(`/api/backfill?chart=${m}`, { method: "POST" }).catch(() => null);
-        if (!r?.ok) errors.push(`${DEFS[m].label}: ${r ? (((await r.json().catch(() => ({}))) as { error?: string }).error ?? r.status) : "network error"}`);
+      setState({ syncedTo: null, done: false });
+      for (let step = 0; step < 30; step++) {
+        const r = await fetch("/api/backfill", { method: "POST" }).catch(() => null);
+        const body = r
+          ? ((await r.json().catch(() => ({}))) as { pending?: boolean; syncedTo?: number | null; errors?: string[]; error?: string })
+          : { error: "network error" };
+        if (!r?.ok || body.error) {
+          setState({ syncedTo: null, done: true, error: body.error ?? `HTTP ${r?.status}` });
+          break;
+        }
+        setState({ syncedTo: body.syncedTo ?? null, done: !body.pending, error: body.errors?.[0] });
+        if (!body.pending) break;
       }
-      setState({ done: metrics.length, total: metrics.length, errors });
       running.current = false;
-      if (!errors.length) setTimeout(() => setState(null), 4000);
+      setTimeout(() => setState((s) => (s?.error ? s : null)), 5000);
     }
 
-    const onEvent = (e: Event) => run((e as CustomEvent<Metric[]>).detail);
-    window.addEventListener(BACKFILL_EVENT, onEvent);
-    fetch("/api/backfill")
-      .then((r) => (r.ok ? (r.json() as Promise<{ pending: Metric[] }>) : { pending: [] }))
-      .then((d) => run(d.pending))
-      .catch(() => {});
-    return () => window.removeEventListener(BACKFILL_EVENT, onEvent);
+    window.addEventListener(CATCH_UP_EVENT, run);
+    let recent = false;
+    try {
+      recent = Date.now() - Number(sessionStorage.getItem(CHECKED_KEY)) < CHECK_EVERY_MS;
+      sessionStorage.setItem(CHECKED_KEY, String(Date.now()));
+    } catch {}
+    if (!recent)
+      fetch("/api/backfill")
+        .then((r) => (r.ok ? (r.json() as Promise<{ pending: boolean }>) : { pending: false }))
+        .then((d) => {
+          if (d.pending) void run();
+        })
+        .catch(() => {});
+    return () => window.removeEventListener(CATCH_UP_EVENT, run);
   }, []);
 
   if (!state) return null;
-  const finished = state.done === state.total;
+  const upTo = state.syncedTo
+    ? new Date(state.syncedTo * 1000).toLocaleString([], { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })
+    : null;
   return (
-    <div role="status" aria-live="polite" className="fixed inset-x-4 bottom-4 z-50 mx-auto max-w-sm rounded-xl border border-line bg-surface p-4 text-sm shadow-lg sm:left-auto sm:right-6">
+    <div
+      role="status"
+      aria-live="polite"
+      className="fixed inset-x-4 bottom-4 z-50 mx-auto max-w-sm rounded-xl border border-line bg-surface p-4 text-sm shadow-lg sm:left-auto sm:right-6"
+    >
       <p className="font-medium">
-        {finished ? (state.errors.length ? "History import finished with errors" : "30 days of history imported") : `Importing 30 days of history: ${DEFS[state.current!].label}`}
+        {state.error ? "Couldn't copy all missing history" : state.done ? "History is up to date" : "Copying missing history from your server"}
       </p>
-      <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-paper">
-        <div className="h-full bg-signal transition-[width]" style={{ width: `${(100 * state.done) / state.total}%` }} />
-      </div>
       <p className="mt-1 text-xs text-muted">
-        {state.done} of {state.total} charts
+        {state.error ?? (upTo ? `Copied up to ${upTo}.` : "Finding what's missing…")} {state.error ? "The nightly sync tries again." : ""}
       </p>
-      {state.errors.map((e) => (
-        <p key={e} className="mt-1 text-xs text-crit">
-          {e}
-        </p>
-      ))}
-      {finished && state.errors.length > 0 && (
+      {state.error && (
         <button className="mt-2 text-xs text-muted underline" onClick={() => setState(null)}>
           Dismiss
         </button>

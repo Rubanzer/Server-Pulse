@@ -67,6 +67,8 @@ Server Pulse has two parts that only talk over one HTTPS link:
 - 🌗 **Light, dark or system theme**, and a layout that works from a 320 px phone to a 4K screen.
 - 🖥️ **btop in the browser, done properly**: the Server page shows every core (heatmap with temperatures), memory, disks, network and processes, streamed live every second straight from your server.
 - 🔗 **Add a server with one command**: a one-time code pairs the agent with your dashboard; you approve the server before it's saved.
+- 🧭 **Honest history**: charts cover the range you pick, shade the time before monitoring started, and break at gaps with the reason (server off, agent stopped, filling from server). Every chart shows its coverage; Reports mark months that weren't monitored.
+- 🔁 **Gaps fill themselves**: when the internet, tunnel or dashboard was down but the server kept running, the missing time is copied from the server (it keeps 30 days) on the next sync or as soon as you open the dashboard.
 - 🕰️ **Any time window, everywhere**: History, Logs and Failures share one *From … to …* picker; open a failure to jump to the log lines or the CPU/memory/disk charts around it, and from History to the logs and failures of the same window.
 - 📜 **Live logs and failure history**: the Logs page streams the server's system log live (filter by level, service, text) and keeps every failure (crashes, out-of-memory, failed services, disk errors, CPU/RAM/disk/temperature limits, offline) for 180 days. Secrets are removed on the server before anything is sent.
 - 🎞️ **Smooth at 60 fps** — live charts scroll continuously with zero added delay; pages switch instantly.
@@ -652,10 +654,10 @@ CREATE TABLE settings (
 | `/api/signup` | POST | Public | Create an account |
 | `/api/account` | POST / DELETE | Account | Change password / delete account and its history |
 | `/api/live` | GET | Owner, viewer | Latest values; one shared server request per interval |
-| `/api/history?chart=&from=&to=` | GET | Owner, viewer | Bucketed series |
+| `/api/history?from=&to=[&chart=]` | GET | Owner, viewer | Bucketed series for every chart (or one), with gaps and their reasons, where monitoring started, and coverage |
 | `/api/reports` | GET | Owner, viewer | 12 months of aggregates |
-| `/api/backfill` | GET | Owner | Charts still waiting for their first import |
-| `/api/backfill?chart=` | POST | Owner | 30-day import for one chart |
+| `/api/backfill` | GET | Owner | Is the dashboard behind the server? |
+| `/api/backfill` | POST | Owner | One 40-s step of copying missing history from the server |
 | `/api/settings` | GET | Owner | Status for the Settings page |
 | `/api/settings/link`, `/api/settings/test` | POST | Owner | Save / test the server link (`DELETE` on link reverts to `SERVER_URL`) |
 | `/api/logs?prio=&unit=&after=&since=&until=` | GET | Owner | Recent log lines (fallback when the browser can't reach the agent), or a past window oldest first, 500 a page |
@@ -947,7 +949,7 @@ sudo /usr/local/bin/btop-report.py --now     # send a test email now
 | **Offline after months** of working (Tailscale) | The machine's key expired: run `sudo tailscale up`, then disable key expiry (step 1.4) so it doesn't happen again |
 | Offline whenever the **laptop sleeps** or the lid closes | Run step 1.5 and reboot |
 | Live view **paused** | ngrok budget mode hit 80 % of the monthly quota; switch to Tailscale Funnel or wait for the reset date shown in Settings |
-| History is **empty** | Database not connected: Vercel → Storage → Neon → Redeploy; then **Settings → Backfill 30 days** |
+| History is **empty** | Database not connected: Vercel → Storage → Neon → Redeploy; then **Settings → Fill missing history** (or just keep a page open: it fills in by itself) |
 | Sync shows **errors** | Check `sync_runs` in Settings; the next nightly run re-fills the last 26 h |
 | btop page **garbled** | Make sure the service has `Environment=TERM=xterm-256color`; zoom the browser out |
 | No **Telegram** alerts | Re-check the bot token and chat ID; run the test command in [Alerts](#-alerts) |

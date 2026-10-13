@@ -95,6 +95,12 @@ func NewStore(charts []chartDef) *Store {
 func (s *Store) Add(ts int64, vals map[string][]float64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	// the rings are binary-searched, so time must only move forward. A clock stepped back (NTP fix)
+	// leaves a gap until it catches up instead of corrupting the order.
+	// ponytail: drops readings for as long as the step was; a monotonic offset would keep them.
+	if ts <= s.lastTS || (s.coarse.Len > 0 && ts/60*60+60 < s.coarse.Times[s.coarse.at(s.coarse.Len-1)]) {
+		return
+	}
 	s.fine.push(ts, vals)
 	s.latest, s.lastTS = vals, ts
 

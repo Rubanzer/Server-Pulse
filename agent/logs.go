@@ -268,10 +268,19 @@ func rangeLogs(ctx context.Context, f logFilter, n int, after string) (entries [
 
 // followLogs streams new entries (after `backlog` recent ones) until ctx ends.
 func followLogs(ctx context.Context, f logFilter, backlog int, emit func(LogEntry) bool) error {
+	return followFrom(ctx, f, backlog, "", emit)
+}
+
+// followFrom is followLogs that starts right after `cursor` when one is given.
+func followFrom(ctx context.Context, f logFilter, backlog int, cursor string, emit func(LogEntry) bool) error {
 	if _, err := exec.LookPath("journalctl"); err != nil {
 		return errNoJournal
 	}
-	cmd := exec.CommandContext(ctx, "journalctl", journalArgs(f, "-f", "-n", strconv.Itoa(backlog))...)
+	start := []string{"-f", "-n", strconv.Itoa(backlog)}
+	if cursor != "" {
+		start = []string{"-f", "--after-cursor", cursor}
+	}
+	cmd := exec.CommandContext(ctx, "journalctl", journalArgs(f, start...)...)
 	out, err := cmd.StdoutPipe()
 	if err != nil {
 		return err
@@ -511,22 +520,57 @@ func (l *EventLog) Recent(n int) []Event {
 }
 
 // watchJournal turns error-level and pattern-matched journal lines into events, for as long as ctx lives.
-func watchJournal(ctx context.Context, l *EventLog) {
+//
+// It remembers its place in cursorFile, so whatever was logged while the agent was stopped, restarting
+// or the machine was booting (often the crash or OOM kill that took it down) is still classified.
+func watchJournal(ctx context.Context, l *EventLog, cursorFile string) {
+	cursor := savedCursor(cursorFile)
+	lastSave := time.Now()
 	for ctx.Err() == nil {
-		err := followLogs(ctx, logFilter{Prio: 6}, 0, func(e LogEntry) bool {
+		started := time.Now()
+		got := 0
+		err := followFrom(ctx, logFilter{Prio: 6}, 0, cursor, func(e LogEntry) bool {
+			got++
 			if sev, kind, ok := classify(e); ok {
 				l.Add(e.T/1000, sev, kind, e.Unit, e.Msg)
 			}
+			cursor = e.Cursor
+			if time.Since(lastSave) > 10*time.Second {
+				os.WriteFile(cursorFile, []byte(cursor), 0o600)
+				lastSave = time.Now()
+			}
 			return ctx.Err() == nil
 		})
+		if cursor != "" {
+			os.WriteFile(cursorFile, []byte(cursor), 0o600)
+		}
 		if errors.Is(err, errNoJournal) {
 			return
+		}
+		if got == 0 && time.Since(started) < 3*time.Second && cursor != "" {
+			cursor = "" // journalctl rejected the cursor (journal rotated or vacuumed): start at the tail
+			os.Remove(cursorFile)
 		}
 		select { // journalctl exited (rotation, restart): start it again
 		case <-ctx.Done():
 		case <-time.After(5 * time.Second):
 		}
 	}
+}
+
+// savedCursor returns the remembered journal position, unless it is over a week old: catching up a
+// month of logs after a long stop would only flood the history with stale failures.
+func savedCursor(path string) string {
+	st, err := os.Stat(path)
+	if err != nil || time.Since(st.ModTime()) > 7*24*time.Hour {
+		return ""
+	}
+	b, _ := os.ReadFile(path)
+	c := strings.TrimSpace(string(b))
+	if len(c) > 300 || strings.ContainsAny(c, "\n\x00") {
+		return ""
+	}
+	return c
 }
 
 // ---------- threshold failures from the 1-second samples ----------

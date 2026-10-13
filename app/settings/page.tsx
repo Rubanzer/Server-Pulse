@@ -3,9 +3,8 @@
 import Link from "next/link";
 import { useCallback, useEffect, useState } from "react";
 import { input } from "@/components/auth-forms";
-import { requestBackfill } from "@/components/backfill-runner";
+import { requestCatchUp } from "@/components/backfill-runner";
 import { LinkForm } from "@/components/link-form";
-import { METRICS } from "@/lib/charts";
 import { hardNavigate } from "@/lib/navigate";
 import type { ServerInfo } from "@/lib/netdata";
 import type { Usage } from "@/lib/usage";
@@ -26,7 +25,7 @@ type S = {
   viewer: boolean;
   runs: Run[];
   storage: { bytes: number; rows: number; oldest: number | null; limit: number } | null;
-  pending: string[];
+  pending: boolean;
   usage: Usage | null;
 };
 type Test = { ok: boolean; ms?: number; error?: string; info?: ServerInfo };
@@ -260,12 +259,14 @@ export default function SettingsPage() {
             >
               {busy === "sync" ? "Syncing…" : "Sync now"}
             </button>
-            <button className={btn} disabled={!s.database || !connected} onClick={() => requestBackfill([...METRICS])}>
-              Backfill 30 days
+            <button className={btn} disabled={!s.database || !connected} onClick={requestCatchUp}>
+              Fill missing history
             </button>
           </div>
           {!s.database && <p className="mt-3 text-sm text-warn">No database connected. In Vercel: Storage → Create Database → Neon, then redeploy.</p>}
-          {s.pending.length > 0 && s.database && <p className="mt-3 text-sm text-muted">Waiting for first import: {s.pending.join(", ")}.</p>}
+          {s.pending && s.database && (
+            <p className="mt-3 text-sm text-muted">Some history hasn&apos;t been copied from your server yet. It fills in by itself while a page is open, or press Fill missing history.</p>
+          )}
           {s.runs.length > 0 && (
             <div className="-mx-4 mt-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
               <table className="w-full min-w-[520px] text-sm">
@@ -282,7 +283,7 @@ export default function SettingsPage() {
                   {s.runs.map((r) => (
                     <tr key={r.id} className="border-b border-line align-top last:border-0">
                       <td className="whitespace-nowrap py-2 pr-3">{new Date(r.startedAt).toLocaleString()}</td>
-                      <td className="py-2 pr-3">{r.kind === "backfill" ? "Backfill" : "Sync"}</td>
+                      <td className="py-2 pr-3">{r.kind === "backfill" ? "Catch-up" : "Sync"}</td>
                       <td className={`py-2 pr-3 font-medium ${r.status === "ok" ? "text-ok" : r.status ? "text-crit" : "text-muted"}`}>{r.status ?? "running"}</td>
                       <td className="py-2 pr-3 text-right">{r.rowsInserted ?? "—"}</td>
                       <td className="py-2 text-xs text-muted">{r.error}</td>

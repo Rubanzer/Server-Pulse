@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
-import { Lru, stats } from "@/lib/algo";
+import { Lru, stats, type Gap } from "@/lib/algo";
 import { DEFS, METRICS, type Metric, type Point } from "@/lib/charts";
 import { fmtNum, Legend, SeriesChart } from "./series-chart";
 import { TimeRange } from "./time-range";
@@ -18,10 +18,19 @@ const PRESETS = [
   { key: "1y", label: "1 year", sec: 365 * 86400 },
 ];
 
-type Result = { source: string; step: number; points: Point[]; note?: string } | { error: string };
+type Result = { source: string; step: number; points: Point[]; note?: string; gaps: Gap[]; firstSample: number | null; coverage: number } | { error: string };
+type All = Partial<Record<Metric, Result>>;
 
-/** Ranges already fetched this session, per metric: revisiting a range (or going back) is instant. */
-const cache = new Lru<string, Result>(7 * 24);
+/** Ranges already fetched this session (all charts at once): revisiting a range or going back is instant. */
+const cache = new Lru<string, All>(24);
+
+const fmtDay = (t: number) => new Date(t * 1000).toLocaleDateString([], { day: "numeric", month: "short", year: "numeric" });
+const fmtSpan = (sec: number) =>
+  sec >= 60 * 86400
+    ? `${Math.round(sec / (30 * 86400))} months`
+    : sec >= 2 * 86400
+      ? `${Math.round(sec / 86400)} days`
+      : `${Math.max(1, Math.round(sec / 3600))} hours`;
 const minute = () => Math.floor(Date.now() / 60_000) * 60;
 
 function csv(metric: Metric, points: Point[]) {
@@ -59,39 +68,37 @@ export function HistoryView({ owner = false }: { owner?: boolean }) {
   );
 
   const key = `${from}-${to}`;
-  // per metric: the result on screen and which range it belongs to. A chart keeps showing its previous
-  // range (dimmed) until its new data lands, so nothing flashes to a skeleton; each chart updates as
-  // soon as its own request finishes instead of waiting for all seven.
-  const [shown, setShown] = useState<Partial<Record<Metric, { key: string; r: Result }>>>(() => {
-    const init: Partial<Record<Metric, { key: string; r: Result }>> = {};
-    for (const m of METRICS) {
-      const r = cache.peek(`${m}|${key}`);
-      if (r) init[m] = { key, r };
-    }
-    return init;
+  // the charts on screen and the range they belong to: the previous range stays (dimmed) until the
+  // new one lands, so nothing flashes to a skeleton. One request brings every chart.
+  const [shown, setShown] = useState<{ key: string; all: All } | null>(() => {
+    const hit = cache.peek(key);
+    return hit ? { key, all: hit } : null;
   });
   useEffect(() => {
     const ctrl = new AbortController();
-    for (const m of METRICS) {
-      const ck = `${m}|${key}`;
-      const hit = cache.get(ck);
-      const show = (r: Result) => !ctrl.signal.aborted && setShown((s) => ({ ...s, [m]: { key, r } }));
-      if (hit) {
-        queueMicrotask(() => show(hit));
-        continue;
-      }
-      fetch(`/api/history?chart=${m}&from=${from}&to=${to}`, { signal: ctrl.signal })
-        .then(async (res) => {
-          if (res.status === 401) return router.replace("/login");
-          const r = (await res.json()) as Result;
-          if (res.ok) cache.set(ck, r);
-          show(r);
-        })
-        .catch((e: Error) => e.name !== "AbortError" && show({ error: e.message }));
+    const show = (all: All) => !ctrl.signal.aborted && setShown({ key, all });
+    const hit = cache.get(key);
+    if (hit) {
+      queueMicrotask(() => show(hit));
+      return () => ctrl.abort();
     }
+    fetch(`/api/history?from=${from}&to=${to}`, { signal: ctrl.signal })
+      .then(async (res) => {
+        if (res.status === 401) return router.replace("/login");
+        const body = (await res.json()) as { charts?: All; error?: string };
+        if (!body.charts) return show(Object.fromEntries(METRICS.map((m) => [m, { error: body.error ?? `HTTP ${res.status}` }])));
+        cache.set(key, body.charts);
+        show(body.charts);
+      })
+      .catch((e: Error) => e.name !== "AbortError" && show(Object.fromEntries(METRICS.map((m) => [m, { error: e.message }]))));
     return () => ctrl.abort();
   }, [key, from, to, router]);
-  const loading = METRICS.some((m) => shown[m]?.key !== key);
+  const loading = shown?.key !== key;
+  // what this range actually holds: monitoring may have started inside it
+  const ok = Object.values(shown?.all ?? {}).filter((r): r is Exclude<Result, { error: string }> => !!r && !("error" in r));
+  const firstSample = ok.reduce<number | null>((a, r) => (r.firstSample !== null && (a === null || r.firstSample < a) ? r.firstSample : a), null);
+  const nowS = now; // pinned when the range was picked
+  const startsInside = firstSample !== null && firstSample > from;
 
   return (
     <div className="space-y-5">
@@ -101,6 +108,20 @@ export function HistoryView({ owner = false }: { owner?: boolean }) {
           <p className="text-sm text-muted">
             {new Date(from * 1000).toLocaleString()} to {new Date(to * 1000).toLocaleString()}. Drag across a chart to zoom in.
           </p>
+          {!loading && firstSample === null && ok.length > 0 && (
+            <p className="mt-1 text-sm">No readings stored yet. They appear here as soon as your server sends data.</p>
+          )}
+          {!loading && startsInside && firstSample! < to && (
+            <p className="mt-1 text-sm">
+              Monitoring started {fmtDay(firstSample!)}, so this range holds {fmtSpan(Math.min(to, nowS) - firstSample!)} of data.{" "}
+              <button className="text-signal underline" onClick={() => zoom(firstSample!, Math.min(to, nowS))}>
+                Show only that
+              </button>
+            </p>
+          )}
+          {!loading && firstSample !== null && firstSample >= to && (
+            <p className="mt-1 text-sm">This range is before monitoring started ({fmtDay(firstSample)}): there&apos;s nothing to show.</p>
+          )}
         </div>
         {owner && (
           <nav aria-label="Same time elsewhere" className="flex gap-2 text-sm">
@@ -133,10 +154,9 @@ export function HistoryView({ owner = false }: { owner?: boolean }) {
       />
 
       <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3" aria-busy={loading}>
-        {METRICS.map((m) => {
-          const e = shown[m];
-          return <HistoryCard key={m} m={m} r={e?.r} stale={!!e && e.key !== key} onZoom={zoom} />;
-        })}
+        {METRICS.map((m) => (
+          <HistoryCard key={m} m={m} r={shown?.all[m]} stale={loading && !!shown} onZoom={zoom} from={from} to={to} />
+        ))}
       </div>
     </div>
   );
@@ -147,12 +167,17 @@ const HistoryCard = memo(function HistoryCard({
   r,
   stale,
   onZoom,
+  from,
+  to,
 }: {
   m: Metric;
   r: Result | undefined;
   stale: boolean;
   onZoom: (f: number, t: number) => void;
+  from: number;
+  to: number;
 }) {
+  const domain = useMemo<[number, number]>(() => [from, to], [from, to]);
   const series = useMemo(() => DEFS[m].series.filter((s) => s.key !== "usedGiB"), [m]);
   const pts = r && "points" in r ? r.points : EMPTY;
   const first = series[0]!;
@@ -175,17 +200,39 @@ const HistoryCard = memo(function HistoryCard({
           <p className="grid h-[220px] place-items-center px-6 text-center text-sm text-crit">{r.error}</p>
         ) : (
           <>
-            <SeriesChart points={pts} series={series} onZoom={onZoom} yMax={first.unit === "%" ? 100 : undefined} />
+            <SeriesChart
+              points={pts}
+              series={series}
+              onZoom={onZoom}
+              yMax={first.unit === "%" ? 100 : undefined}
+              domain={domain}
+              gaps={r.gaps}
+              firstSample={r.firstSample}
+              empty={
+                r.firstSample === null
+                  ? m === "temp"
+                    ? "Your server hasn't reported a temperature. That needs hardware sensors, which virtual machines and some cloud servers don't have."
+                    : "No readings for this chart yet."
+                  : r.firstSample >= to
+                    ? "Before monitoring started."
+                    : "No readings in this range."
+              }
+            />
             <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
               <Legend series={series} />
               {st && (
-                <dl className="flex gap-4 text-xs">
+                <dl className="flex flex-wrap gap-x-4 gap-y-1 text-xs">
                   {(["avg", "p95", "peak"] as const).map((k) => (
                     <div key={k} className="flex gap-1">
                       <dt className="text-muted">{k === "avg" ? "Average" : k === "p95" ? "95th pct" : "Peak"}</dt>
                       <dd className="font-medium">{fmtNum(st[k], first.unit)}</dd>
                     </div>
                   ))}
+                  {/* averages and peaks only count measured time; say how much of the range that is */}
+                  <div className="flex gap-1" title="Share of the monitored part of this range that has readings">
+                    <dt className="text-muted">Coverage</dt>
+                    <dd className={`font-medium ${r.coverage < 0.9 ? "text-warn" : ""}`}>{Math.round(r.coverage * 100)}%</dd>
+                  </div>
                 </dl>
               )}
             </div>
