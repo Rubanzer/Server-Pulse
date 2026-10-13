@@ -65,8 +65,34 @@ export const pairings = pgTable(
     hostname: text("hostname"),
     agentVersion: text("agent_version"),
     error: text("error"),
+    /** Link the agent handed over, AES-GCM encrypted, until the owner approves or rejects it. */
+    pendingLinkEnc: text("pending_link_enc"),
+    approvedAt: timestamp("approved_at", { withTimezone: true }),
+    rejectedAt: timestamp("rejected_at", { withTimezone: true }),
   },
   (t) => [index("pairings_server").on(t.serverId)],
+);
+
+/**
+ * Failure history: errors and crashes from the server's logs, sustained threshold breaches (both found
+ * by the agent), and what the dashboard itself sees (server offline / back online, sync failures).
+ * `key` makes re-syncing idempotent: "<agent epoch>:<agent event id>" or "dash:<uuid>".
+ */
+export const events = pgTable(
+  "events",
+  {
+    id: bigserial("id", { mode: "number" }).primaryKey(),
+    serverId: text("server_id").notNull(),
+    key: text("key").notNull(),
+    ts: timestamp("ts", { withTimezone: true }).notNull(),
+    lastAt: timestamp("last_at", { withTimezone: true }).notNull(),
+    count: integer("count").notNull().default(1),
+    severity: text("severity").notNull(), // critical | error | warning | info
+    kind: text("kind").notNull(), // log | service | memory | disk | crash | cpu | temp | offline | online | sync
+    source: text("source").notNull().default(""),
+    message: text("message").notNull(),
+  },
+  (t) => [unique("events_server_key").on(t.serverId, t.key), index("events_server_ts").on(t.serverId, t.ts.desc())],
 );
 
 /** Key/value store. Per-server keys are prefixed "<serverId>:". */

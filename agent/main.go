@@ -45,8 +45,8 @@ type Config struct {
 	Hostname  string   `json:"hostname"`
 	Tunnel    bool     `json:"tunnel"`
 	KeepAwake bool     `json:"keepAwake"`
-	Origins   []string `json:"origins,omitempty"`  // dashboard origins allowed to stream (empty = any; the token authorizes)
-	ShowArgs  bool     `json:"showArgs,omitempty"` // include scrubbed command lines in the process list
+	Origins   []string `json:"origins,omitempty"`   // dashboard origins allowed to stream (empty = any; the token authorizes)
+	ShowArgs  bool     `json:"showArgs,omitempty"`  // include scrubbed command lines in the process list
 	PublicURL string   `json:"publicUrl,omitempty"` // your own tunnel (e.g. ngrok) pointing at 127.0.0.1:19998
 }
 
@@ -166,9 +166,15 @@ func cmdRun(args []string) error {
 	ts.set("off", "", "")
 	hub := NewHub(NewPulse("/", cfg.ShowArgs), cfg.Password, cfg.Origins)
 	api := NewAPI(hub, store, col.Charts(), dashUser, cfg.Password, ts.snapshot)
+	events := OpenEventLog(stateDir)
+	api.events = events
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// failures: error-level journal lines and crashes, plus sustained threshold breaches
+	go watchJournal(ctx, events)
+	var th thresholds
 
 	// sampler: once a second, on the second
 	go func() {
@@ -181,7 +187,9 @@ func cmdRun(args []string) error {
 			case <-time.After(now.Truncate(time.Second).Add(time.Second).Sub(now)):
 			}
 			t := time.Now()
-			store.Add(t.Unix(), col.Sample(float64(t.UnixNano())/1e9))
+			s := col.Sample(float64(t.UnixNano()) / 1e9)
+			store.Add(t.Unix(), s)
+			th.check(events, t.Unix(), thresholdValues(s))
 		}
 	}()
 
@@ -450,7 +458,7 @@ func cmdInstall(args []string) error {
 			printLink(cfg, host)
 			return nil
 		}
-		fmt.Printf("\n  ✓ Done. This server is connected to %s. Go back to your browser.\n\n", cfg.Origins[0])
+		fmt.Printf("\n  ✓ Done. Go back to %s and click \"Approve and connect\" to finish.\n\n", cfg.Origins[0])
 		tailscaleReminder(cfg, host)
 		return nil
 	}
@@ -517,6 +525,8 @@ Restart=always
 RestartSec=3
 # least privilege: throwaway user, read-only system, config passed as a credential
 DynamicUser=yes
+# read-only access to the system journal for live logs and failure history
+SupplementaryGroups=systemd-journal
 StateDirectory=server-pulse
 LoadCredential=config:/etc/server-pulse/config.json
 ProtectSystem=strict

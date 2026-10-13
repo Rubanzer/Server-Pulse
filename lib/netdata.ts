@@ -13,6 +13,7 @@ export class NetdataError extends Error {
   constructor(
     message: string,
     readonly status?: number,
+    readonly notJson = false,
   ) {
     super(message);
   }
@@ -81,8 +82,8 @@ async function get<T>(link: ServerLink, path: string, schema: z.ZodType<T>): Pro
     body = JSON.parse(text);
   } catch {
     if (/^\s*</.test(text))
-      throw new NetdataError(`${link.host} answered with a web page (for example the btop terminal), not the Server Pulse agent. Point the tunnel at 127.0.0.1:19998.`);
-    throw new NetdataError(`${link.host} did not return JSON — is the link pointing at the agent or Netdata (…/history)?`);
+      throw new NetdataError(`${link.host} answered with a web page (for example the btop terminal), not the Server Pulse agent. Point the tunnel at 127.0.0.1:19998.`, status, true);
+    throw new NetdataError(`${link.host} did not return JSON — is the link pointing at the agent or Netdata (…/history)?`, status, true);
   }
   const parsed = schema.safeParse(body);
   if (!parsed.success) throw new NetdataError(`Unexpected response from Netdata at ${path.split("?")[0]}`);
@@ -235,4 +236,56 @@ const PulseSchema = z.looseObject({ seq: z.number(), cpu: z.looseObject({ cores:
 /** One full live frame from the agent (per-core CPU, temps, disks, network, processes). */
 export async function pulseSnapshot(link: ServerLink): Promise<import("@/lib/pulse").PulseFrame> {
   return (await get(link, "/api/v1/pulse", PulseSchema)) as unknown as import("@/lib/pulse").PulseFrame;
+}
+
+// ---------- logs and failures (agent v2) ----------
+
+export type LogLine = { c: string; t: number; p: number; u: string; m: string };
+const LogsSchema = z.looseObject({
+  entries: z.array(z.looseObject({ c: z.string(), t: z.number(), p: z.number(), u: z.string(), m: z.string() })),
+  cursor: z.string().optional(),
+  error: z.string().optional(),
+  more: z.boolean().optional(),
+  range: z.boolean().optional(),
+});
+
+// Agents before v1.2.0 answer unknown paths with a 200 text page instead of a 404: both mean "not supported".
+async function getNewEndpoint<T>(link: ServerLink, path: string, schema: z.ZodType<T>): Promise<T> {
+  try {
+    return await get(link, path, schema);
+  } catch (e) {
+    if (e instanceof NetdataError && e.notJson) throw new NetdataError("This agent is older than the logs feature.", 404);
+    throw e;
+  }
+}
+
+/**
+ * Journal lines, already scrubbed of secrets by the agent: the most recent ones, those after a cursor,
+ * or (with `since`) a time window oldest first, paged with the cursor.
+ */
+export async function agentLogs(link: ServerLink, q: { after?: string; prio?: number; unit?: string; n?: number; since?: number; until?: number }) {
+  const p = new URLSearchParams({ n: String(q.n ?? 200), prio: String(q.prio ?? 6) });
+  if (q.after) p.set("after", q.after);
+  if (q.unit) p.set("unit", q.unit);
+  if (q.since) p.set("since", String(q.since));
+  if (q.until) p.set("until", String(q.until));
+  const r = await getNewEndpoint(link, `/api/v1/logs?${p}`, LogsSchema);
+  return { entries: r.entries as LogLine[], cursor: r.cursor ?? q.after ?? "", error: r.error, more: r.more ?? false, range: r.range ?? false };
+}
+
+export type AgentEvent = { id: number; t: number; last: number; n: number; sev: string; kind: string; src: string; msg: string };
+const EventsSchema = z.looseObject({
+  epoch: z.string(),
+  events: z.array(z.looseObject({ id: z.number(), t: z.number(), last: z.number(), n: z.number(), sev: z.string(), kind: z.string(), src: z.string(), msg: z.string() })),
+});
+
+/** Failures recorded by the agent; null for older agents without failure tracking. */
+export async function agentEvents(link: ServerLink, after: number, updated: number): Promise<{ epoch: string; events: AgentEvent[] } | null> {
+  try {
+    const r = await getNewEndpoint(link, `/api/v1/events?after=${after}&updated=${updated}`, EventsSchema);
+    return { epoch: r.epoch, events: r.events as AgentEvent[] };
+  } catch (e) {
+    if (e instanceof NetdataError && e.status === 404) return null;
+    throw e;
+  }
 }

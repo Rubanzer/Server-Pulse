@@ -16,17 +16,17 @@ import (
 // Numbers are quantized (integers / one decimal) so frames stay small; gzip on the stream does the rest.
 
 type Frame struct {
-	Boot  string  `json:"boot"` // changes when the server reboots
-	Seq   uint64  `json:"seq"`
-	T     int64   `json:"t"`
-	Up    int64   `json:"up"`
+	Boot  string     `json:"boot"` // changes when the server reboots
+	Seq   uint64     `json:"seq"`
+	T     int64      `json:"t"`
+	Up    int64      `json:"up"`
 	Load  [3]float64 `json:"load"`
-	CPU   CPUInfo `json:"cpu"`
-	Mem   MemInfo `json:"mem"`
-	Disks []Mount `json:"disks,omitempty"` // refreshed every 10 s
-	IO    []DiskIO `json:"io"`
-	Net   []NIC   `json:"net"`
-	Procs *Procs  `json:"procs,omitempty"` // refreshed every 3 s
+	CPU   CPUInfo    `json:"cpu"`
+	Mem   MemInfo    `json:"mem"`
+	Disks []Mount    `json:"disks,omitempty"` // refreshed every 10 s
+	IO    []DiskIO   `json:"io"`
+	Net   []NIC      `json:"net"`
+	Procs *Procs     `json:"procs,omitempty"` // refreshed every 3 s
 }
 
 type CPUInfo struct {
@@ -74,8 +74,8 @@ type NIC struct {
 
 type Procs struct {
 	Count  int     `json:"count"`
-	Top    []Proc  `json:"top"`    // top 25 by CPU
-	Groups []Group `json:"groups"` // top 15 names by CPU, summed over all processes
+	Top    []Proc  `json:"top"`              // top 25 by CPU
+	Groups []Group `json:"groups"`           // top 15 names by CPU, summed over all processes
 	Hidden bool    `json:"hidden,omitempty"` // /proc mounted with hidepid: only the agent's own processes are visible
 }
 

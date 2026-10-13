@@ -6,7 +6,7 @@ import { CodeBlock } from "./code-block";
 import { LinkForm } from "./link-form";
 
 type Pairing = { code: string; command: string; expiresAt: string };
-type Step = "waiting" | "paired" | "data";
+type Step = "waiting" | "approve" | "paired" | "data";
 
 /**
  * Add a server in one paste: a one-time install command (10 minutes, single use) and a checklist that
@@ -18,13 +18,20 @@ export function AddServer({ database }: { database: boolean }) {
   const [step, setStep] = useState<Step>("waiting");
   const [host, setHost] = useState<string | null>(null);
   const [agentError, setAgentError] = useState<string | null>(null);
+  const [request, setRequest] = useState<{ hostname?: string; host?: string; version?: string } | null>(null);
+  const [deciding, setDeciding] = useState(false);
+  const [rejected, setRejected] = useState(false);
   const [left, setLeft] = useState(600);
   const started = useRef(false);
+  // stable, so it runs once when the approve card appears (not on every countdown tick)
+  const focusOnMount = useCallback((el: HTMLButtonElement | null) => el?.focus(), []);
 
   const newCode = useCallback(async () => {
     setError(null);
     setAgentError(null);
     setStep("waiting");
+    setRequest(null);
+    setRejected(false);
     const r = await fetch("/api/agent/pair-code", { method: "POST" }).catch(() => null);
     const body = r ? await r.json().catch(() => ({})) : {};
     if (!r?.ok) return setError(body.error ?? "Couldn't create an install command. Check your connection and try again.");
@@ -47,12 +54,19 @@ export function AddServer({ database }: { database: boolean }) {
       setLeft(secs);
       if (step === "waiting") {
         const s = await fetch(`/api/agent/pair-status?code=${encodeURIComponent(pairing.code)}`, { cache: "no-store" }).then((r) => r.json()).catch(() => null);
-        if (s?.status === "paired") {
+        if (s?.status === "pending") {
+          // a server redeemed the code: the owner confirms it's theirs before anything is saved
+          setRequest({ hostname: s.hostname, host: s.host, version: s.version });
+          setStep("approve");
+          return;
+        } else if (s?.status === "paired") {
           setHost(s.hostname ?? null);
           setStep("paired");
         } else if (s?.status === "error") {
           setAgentError(s.error);
         }
+      } else if (step === "approve") {
+        return; // waiting for the owner's click
       } else if (step === "paired") {
         const live = await fetch("/api/live", { cache: "no-store" }).then((r) => r.json()).catch(() => null);
         if (live?.mode === "live") {
@@ -84,6 +98,27 @@ export function AddServer({ database }: { database: boolean }) {
       </section>
     );
 
+  async function decide(approve: boolean) {
+    if (!pairing) return;
+    setDeciding(true);
+    const r = await fetch("/api/agent/pair-approve", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ code: pairing.code, approve }),
+    }).catch(() => null);
+    const body = r ? await r.json().catch(() => ({})) : {};
+    setDeciding(false);
+    if (!r?.ok) return setAgentError(body.error ?? "Couldn't save your answer. Try again.");
+    if (approve) {
+      setHost(request?.hostname ?? request?.host ?? null);
+      setStep("paired");
+    } else {
+      setRejected(true);
+      setStep("waiting");
+      setRequest(null);
+    }
+  }
+
   const expired = left === 0 && step === "waiting";
   const mm = `${Math.floor(left / 60)}:${String(left % 60).padStart(2, "0")}`;
   return (
@@ -113,8 +148,43 @@ export function AddServer({ database }: { database: boolean }) {
           </>
         )}
 
+        {step === "approve" && request && (
+          <div className="space-y-3 rounded-lg border-2 border-signal p-4" role="alertdialog" aria-labelledby="approve-title">
+            {/* the Approve button takes focus when this appears, so keyboard and screen-reader users land on it */}
+            <p id="approve-title" className="font-medium">
+              Is this your server?
+            </p>
+            <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1 text-sm">
+              <dt className="text-muted">Name</dt>
+              <dd className="font-medium">{request.hostname ?? "unknown"}</dd>
+              <dt className="text-muted">Address</dt>
+              <dd className="break-all font-mono text-xs leading-5">{request.host ?? "unknown"}</dd>
+              {request.version && (
+                <>
+                  <dt className="text-muted">Agent</dt>
+                  <dd>{request.version}</dd>
+                </>
+              )}
+            </dl>
+            <p className="text-xs text-muted">Only approve if you just ran the command on this server. If you don&apos;t recognise it, reject it: someone else used your code.</p>
+            <div className="flex flex-wrap gap-2">
+              <button ref={focusOnMount} onClick={() => decide(true)} disabled={deciding} className="rounded-lg bg-signal px-4 py-2 text-sm font-medium text-on-signal disabled:opacity-50">
+                Approve and connect
+              </button>
+              <button onClick={() => decide(false)} disabled={deciding} className="rounded-lg border border-line px-4 py-2 text-sm hover:border-crit hover:text-crit">
+                Reject
+              </button>
+            </div>
+          </div>
+        )}
+        {rejected && <p className="text-sm text-muted">Rejected. Nothing was saved. Get a new command to try again.</p>}
+
         <ol className="space-y-2 text-sm" aria-live="polite">
-          <Check done={step !== "waiting"} active={step === "waiting" && !expired} label={step === "waiting" ? "Waiting for your server…" : `Connected${host ? `: ${host}` : ""}`} />
+          <Check
+            done={step === "paired" || step === "data"}
+            active={(step === "waiting" || step === "approve") && !expired}
+            label={step === "waiting" ? "Waiting for your server…" : step === "approve" ? "Waiting for your approval" : `Connected${host ? `: ${host}` : ""}`}
+          />
           <Check done={step === "data"} active={step === "paired"} label={step === "data" ? "Receiving live data. Opening your server…" : "Live data"} />
         </ol>
         {agentError && (
@@ -130,7 +200,7 @@ export function AddServer({ database }: { database: boolean }) {
               It shows a <b>Tailscale login link</b>. Open it, sign in with Google, Microsoft or GitHub (free) and approve the server. That gives it a private HTTPS address; no
               router ports are opened.
             </li>
-            <li>When it says &ldquo;Done&rdquo;, this page moves on by itself.</li>
+            <li>When it says &ldquo;Done&rdquo;, approve the server here; then this page moves on by itself.</li>
             <li>
               Already use <b>ngrok</b>? Point ngrok at <code className="font-mono">127.0.0.1:19998</code> (without <code className="font-mono">--basic-auth</code>) and add your
               ngrok address at the end of the command: <code className="font-mono break-all">… {pairing?.code ?? "CODE"} https://your-name.ngrok-free.dev</code>

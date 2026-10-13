@@ -222,7 +222,7 @@ export default function SettingsPage() {
           </div>
           {test && (
             <p role="status" className={`mt-3 text-sm ${test.ok ? "text-ok" : "text-crit"}`}>
-              {test.ok ? `Connected in ${test.ms} ms: ${test.info?.hostname}, ${test.info?.os}, Netdata ${test.info?.netdata}.` : `Connection failed: ${test.error}`}
+              {test.ok ? `Connected in ${test.ms} ms: ${test.info?.hostname}, ${test.info?.os}, ${test.info?.netdata ? `version ${test.info.netdata}` : ""}.` : `Connection failed: ${test.error}`}
             </p>
           )}
           <div className="mt-5 border-t border-line pt-4">

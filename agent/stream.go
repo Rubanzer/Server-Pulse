@@ -2,6 +2,7 @@ package main
 
 import (
 	"compress/gzip"
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -21,7 +22,10 @@ import (
 // No new secret to pair: whoever holds the server link can mint, nobody else can. Tokens live ≤ 2 min,
 // are single-use (nonce cache), and travel in the Authorization header, never in the URL.
 
-const tokenMaxTTL = 120 // seconds
+const (
+	tokenMaxTTL = 120 // seconds
+	tokenSkew   = 30  // tolerated clock difference between the dashboard and this server
+)
 
 func streamKey(password string) []byte {
 	m := hmac.New(sha256.New, []byte(password))
@@ -43,7 +47,7 @@ func (c *nonceCache) use(nonce string, exp, now int64) bool {
 	}
 	if len(c.seen) > 1000 {
 		for n, e := range c.seen {
-			if e+10 < now {
+			if e+tokenSkew+10 < now { // only once the token itself can no longer be accepted
 				delete(c.seen, n)
 			}
 		}
@@ -58,27 +62,40 @@ func (c *nonceCache) use(nonce string, exp, now int64) bool {
 	return true
 }
 
-func verifyToken(tok string, key []byte, nonces *nonceCache, now int64) error {
+// verifyToken checks a stream token for the given scope. "v1.<exp>.<nonce>.<sig>" is the original
+// live-view token (scope "pulse"); "v2.<scope>.<exp>.<nonce>.<sig>" carries an explicit scope, so a
+// token minted for the live view can never open the logs.
+func verifyToken(tok string, key []byte, nonces *nonceCache, now int64, scope string) error {
 	parts := strings.Split(tok, ".")
-	if len(parts) != 4 || parts[0] != "v1" || len(parts[2]) < 16 {
+	var signed, expS, nonce, sig string
+	switch {
+	case len(parts) == 4 && parts[0] == "v1" && scope == "pulse":
+		expS, nonce, sig = parts[1], parts[2], parts[3]
+		signed = "v1." + expS + "." + nonce
+	case len(parts) == 5 && parts[0] == "v2" && parts[1] == scope:
+		expS, nonce, sig = parts[2], parts[3], parts[4]
+		signed = "v2." + scope + "." + expS + "." + nonce
+	default:
 		return errors.New("malformed token")
 	}
-	exp, err := strconv.ParseInt(parts[1], 10, 64)
+	if len(nonce) < 16 {
+		return errors.New("malformed token")
+	}
+	exp, err := strconv.ParseInt(expS, 10, 64)
 	if err != nil {
 		return errors.New("malformed token")
 	}
 	m := hmac.New(sha256.New, key)
-	m.Write([]byte("v1." + parts[1] + "." + parts[2]))
+	m.Write([]byte(signed))
 	want := m.Sum(nil)
-	got, err := base64.RawURLEncoding.DecodeString(parts[3])
+	got, err := base64.RawURLEncoding.DecodeString(sig)
 	if err != nil || !hmac.Equal(got, want) {
 		return errors.New("bad signature")
 	}
-	const skew = 30
-	if exp < now-skew || exp > now+tokenMaxTTL+skew {
+	if exp < now-tokenSkew || exp > now+tokenMaxTTL+tokenSkew {
 		return errors.New("token expired")
 	}
-	if !nonces.use(parts[2], exp, now) {
+	if !nonces.use(nonce, exp, now) {
 		return errors.New("token already used")
 	}
 	return nil
@@ -101,13 +118,14 @@ type Hub struct {
 
 	fmu sync.Mutex // serializes Pulse.Frame (it keeps previous readings for rates)
 
-	mu      sync.Mutex
-	viewers map[chan []byte]string // → client IP
-	perIP   map[string]int
-	running bool
-	last    []byte // latest full frame, for the snapshot endpoint
-	fails   map[string][]int64
-	blockTo map[string]int64
+	mu         sync.Mutex
+	viewers    map[chan []byte]string // → client IP
+	perIP      map[string]int
+	running    bool
+	logViewers int
+	last       []byte // latest full frame, for the snapshot endpoint
+	fails      map[string][]int64
+	blockTo    map[string]int64
 }
 
 func NewHub(p *Pulse, password string, origins []string) *Hub {
@@ -276,7 +294,7 @@ func (h *Hub) ServeStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if err := verifyToken(tok, h.key, &h.nonces, now); err != nil {
+	if err := verifyToken(tok, h.key, &h.nonces, now, "pulse"); err != nil {
 		h.failed(ip, now)
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
@@ -326,7 +344,7 @@ func (h *Hub) ServeStream(w http.ResponseWriter, r *http.Request) {
 type nopFlusher struct{ w http.ResponseWriter }
 
 func (n nopFlusher) Write(b []byte) (int, error) { return n.w.Write(b) }
-func (n nopFlusher) Flush() error                 { return nil }
+func (n nopFlusher) Flush() error                { return nil }
 
 // Snapshot: GET /api/v1/pulse (basic auth) — one full frame, for the dashboard's server-side fallback.
 func (h *Hub) Snapshot(w http.ResponseWriter, _ *http.Request) {
@@ -346,3 +364,107 @@ func (h *Hub) Snapshot(w http.ResponseWriter, _ *http.Request) {
 	time.Sleep(500 * time.Millisecond)
 	writeJSON(w, h.pulse.Frame(float64(time.Now().UnixNano())/1e9, 0, true, true, true, true))
 }
+
+// ---------- live logs ----------
+
+const maxLogViewers = 3
+
+// ServeLogs: GET /api/v1/logs/stream?prio=&unit= with "Authorization: Bearer v2.logs…" → NDJSON lines
+// (the 200 most recent first, then live), gzip, ≤ 15 min per session. Messages are scrubbed of secrets.
+func (h *Hub) ServeLogs(w http.ResponseWriter, r *http.Request) {
+	if !h.cors(w, r) {
+		http.Error(w, "origin not allowed", http.StatusForbidden)
+		return
+	}
+	if r.Method == http.MethodOptions {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+	ip, now := clientIP(r), time.Now().Unix()
+	if h.blocked(ip, now) {
+		http.Error(w, "too many failed attempts, try again later", http.StatusTooManyRequests)
+		return
+	}
+	tok := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+	if err := verifyToken(tok, h.key, &h.nonces, now, "logs"); err != nil {
+		h.failed(ip, now)
+		http.Error(w, err.Error(), http.StatusUnauthorized)
+		return
+	}
+	f, err := parseFilter(r.URL.Query())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	f.Since, f.Until = 0, 0 // live only; past windows go through /api/v1/logs
+	h.mu.Lock()
+	if h.logViewers >= maxLogViewers {
+		h.mu.Unlock()
+		http.Error(w, "too many log viewers", http.StatusTooManyRequests)
+		return
+	}
+	h.logViewers++
+	h.mu.Unlock()
+	defer func() {
+		h.mu.Lock()
+		h.logViewers--
+		h.mu.Unlock()
+	}()
+
+	w.Header().Set("Content-Type", "application/x-ndjson")
+	w.Header().Set("Cache-Control", "no-store")
+	w.Header().Set("X-Accel-Buffering", "no")
+	rc := http.NewResponseController(w)
+	var out interface {
+		Write([]byte) (int, error)
+		Flush() error
+	} = nopFlusher{w}
+	if strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+		w.Header().Set("Content-Encoding", "gzip")
+		gz, _ := gzip.NewWriterLevel(w, gzip.BestSpeed)
+		defer gz.Close()
+		out = gz
+	}
+	w.WriteHeader(http.StatusOK)
+
+	ctx, cancel := context.WithTimeout(r.Context(), maxSession)
+	defer cancel()
+	var wmu sync.Mutex
+	send := func(b []byte) bool {
+		wmu.Lock()
+		defer wmu.Unlock()
+		rc.SetWriteDeadline(time.Now().Add(writeTimeout))
+		if _, err := out.Write(b); err != nil {
+			return false
+		}
+		return out.Flush() == nil && rc.Flush() == nil
+	}
+	if !send([]byte("\n")) { // headers and the gzip header go out now, not with the first matching line
+		return
+	}
+	go func() {
+		t := time.NewTicker(logHeartbeat)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				if !send([]byte("\n")) { // the client skips blank lines
+					cancel() // dead connection: stop journalctl and free the viewer slot
+					return
+				}
+			}
+		}
+	}()
+	err = followLogs(ctx, f, 200, func(e LogEntry) bool {
+		b, _ := json.Marshal(e)
+		return send(append(b, '\n'))
+	})
+	if err != nil {
+		b, _ := json.Marshal(map[string]string{"error": err.Error()})
+		send(append(b, '\n'))
+	}
+}
+
+const logHeartbeat = 20 * time.Second

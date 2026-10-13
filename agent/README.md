@@ -92,11 +92,24 @@ The agent speaks the same API as Netdata (`/api/v1/info`, `allmetrics`, `data`, 
 
 History: 1-second detail for the last hour and 1-minute averages for 30 days, about 9 MB in memory. The 30-day tier is saved to `/var/lib/private/server-pulse/history.gob` every 5 minutes and on shutdown, so reboots keep it.
 
+## Logs and failures
+
+The agent reads the system journal (`journalctl`, read-only) for the dashboard's **Logs** page and watches it all the time for failures: out-of-memory kills, disk errors, crashes, failed services and any error-level line, plus CPU ≥ 95 % (5 min), memory ≥ 95 % (2 min), disk ≥ 90 % (1 min) and temperature ≥ 90 °C (1 min). Failures are kept in `/var/lib/private/server-pulse/events.jsonl` (repeats are counted, at most 60 new ones a minute) and copied by the dashboard into its database for 180 days.
+
+Passwords, tokens, keys and credentials in URLs are removed from every line **before** it leaves the server.
+
+| Endpoint | Auth | Purpose |
+| --- | --- | --- |
+| `GET /api/v1/logs?n=&prio=&unit=&after=&since=&until=` | password | Recent lines, lines after a cursor, or a time window (unix seconds) oldest first with `more` for paging |
+| `GET /api/v1/events?after=&updated=` | password | Failures after an id (plus repeats updated since) |
+| `GET /api/v1/logs/stream?prio=&unit=` | logs-scoped token | Live lines (gzip NDJSON), ≤ 3 viewers |
+
 ## Security
 
 - Read-only: every request needs the `dashboard` password (constant-time check), and only `GET` is allowed.
 - No inbound ports. Funnel dials out, and the local API listens on `127.0.0.1:19998` only.
 - The service runs as a throwaway user (`DynamicUser`) with a read-only system (`ProtectSystem=strict`), no home access and `NoNewPrivileges`. The config (password, auth key) is root-only and handed to the service as a systemd credential.
+- Journal access comes from the `systemd-journal` group (read-only). Filters are validated and passed as arguments, never through a shell.
 - `--no-tunnel` skips Tailscale and serves only on `127.0.0.1:19998`, if you bring your own tunnel or reverse proxy.
 
 ## Troubleshooting

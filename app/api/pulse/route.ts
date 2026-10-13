@@ -18,7 +18,7 @@ export async function GET(req: NextRequest) {
   } catch (e) {
     const status = e instanceof NetdataError && e.status === 404 ? 404 : 502;
     return Response.json(
-      { error: status === 404 ? "This server runs an older agent or the classic Netdata kit. Update the agent to see the live server view." : (e as Error).message },
+      { error: status === 404 ? "This server runs an older agent or the classic Netdata kit." : (e as Error).message },
       { status },
     );
   }

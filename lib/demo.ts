@@ -96,3 +96,59 @@ export function demoPulse(t = Math.floor(Date.now() / 1000)): import("@/lib/puls
 
 const round1 = (x: number) => Math.round(x * 10) / 10;
 const round2 = (x: number) => Math.round(x * 100) / 100;
+
+// ---------- demo logs and failures ----------
+
+const DEMO_LINES: [number, string, string][] = [
+  [6, "nginx.service", 'GET /api/orders 200 12ms "Mozilla/5.0"'],
+  [6, "postgresql@16-main.service", "checkpoint complete: wrote 412 buffers (2.5%); 0 WAL file(s) added"],
+  [6, "cron", "(root) CMD (/usr/local/bin/backup.sh --incremental)"],
+  [4, "python3", "WARNING: slow query took 1830 ms: SELECT * FROM sensor_readings WHERE ..."],
+  [6, "sshd", "Accepted publickey for antpc from 192.168.1.20 port 51522 ssh2"],
+  [3, "grafana-server.service", "level=error msg=\"Failed to read plugin\" error=\"open /var/lib/grafana/plugins: permission denied\""],
+  [6, "kernel", "eno1: Link is Up - 1Gbps/Full - flow control rx/tx"],
+  [5, "systemd", "Started Daily apt download activities."],
+  [6, "netdata", "ALERT 'ram_in_use' cleared"],
+]
+
+/** Deterministic, slowly growing demo log: the cursor is the line's timestamp. */
+export function demoLogs(after: string) {
+  const now = Math.floor(Date.now() / 1000);
+  const from = after ? Number(after) + 1 : now - 200;
+  const entries = [];
+  for (let t = Math.max(from, now - 600); t <= now; t++) {
+    if (hash01(t * 13) > 0.35) continue; // about one line every 3 s
+    const [p, u, m] = DEMO_LINES[Math.floor(hash01(t * 7) * DEMO_LINES.length)]!;
+    entries.push({ c: String(t), t: t * 1000, p, u, m });
+  }
+  return { entries, cursor: String(now) };
+}
+
+/** A past window of demo lines, oldest first, paged by cursor (= unix second of the last line). */
+export function demoRangeLogs(since: number, until: number, after: string, n = 500) {
+  const end = Math.min(until || Infinity, Math.floor(Date.now() / 1000));
+  const entries = [];
+  let t = after ? Number(after) + 1 : since;
+  for (; t <= end && entries.length < n; t++) {
+    if (hash01(t * 13) > 0.35) continue;
+    const [p, u, m] = DEMO_LINES[Math.floor(hash01(t * 7) * DEMO_LINES.length)]!;
+    entries.push({ c: String(t), t: t * 1000, p, u, m });
+  }
+  return { entries, cursor: entries.length ? entries[entries.length - 1]!.c : after, more: t <= end, range: true };
+}
+
+export function demoEvents() {
+  const now = Math.floor(Date.now() / 1000);
+  const ev = (id: number, ago: number, severity: string, kind: string, source: string, message: string, count = 1) => ({
+    id, ts: now - ago, last: now - ago + (count > 1 ? 120 : 0), count, severity, kind, source, message,
+  });
+  return [
+    ev(7, 600, "warning", "cpu", "server-pulse", "CPU at 97% for 5+ minutes"),
+    ev(6, 3_400, "error", "service", "grafana-server.service", "grafana-server.service: Failed with result 'exit-code'.", 3),
+    ev(5, 26_000, "critical", "memory", "kernel", "Out of memory: Killed process 254142 (python3) total-vm:18342112kB"),
+    ev(4, 90_000, "info", "online", "dashboard", "Server is reachable again (was offline for 14 minutes)."),
+    ev(3, 90_840, "critical", "offline", "dashboard", "Server unreachable: Timed out after 8 s — server or tunnel is down"),
+    ev(2, 180_000, "error", "log", "postgresql@16-main.service", "FATAL: password authentication failed for user \"report\"", 12),
+    ev(1, 400_000, "warning", "disk", "server-pulse", "Disk / space at 91% for 1+ minutes"),
+  ];
+}

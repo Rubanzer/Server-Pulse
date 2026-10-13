@@ -1,10 +1,12 @@
 "use client";
 
+import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
 import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { Lru, stats } from "@/lib/algo";
 import { DEFS, METRICS, type Metric, type Point } from "@/lib/charts";
 import { fmtNum, Legend, SeriesChart } from "./series-chart";
+import { TimeRange } from "./time-range";
 
 const PRESETS = [
   { key: "1h", label: "1 hour", sec: 3600 },
@@ -22,13 +24,6 @@ type Result = { source: string; step: number; points: Point[]; note?: string } |
 const cache = new Lru<string, Result>(7 * 24);
 const minute = () => Math.floor(Date.now() / 60_000) * 60;
 
-/** `datetime-local` value ⇄ unix seconds, in the viewer's time zone. */
-const toLocalInput = (t: number) => {
-  const d = new Date(t * 1000);
-  return new Date(d.getTime() - d.getTimezoneOffset() * 60_000).toISOString().slice(0, 16);
-};
-const fromLocalInput = (s: string) => Math.floor(new Date(s).getTime() / 1000);
-
 function csv(metric: Metric, points: Point[]) {
   const keys = DEFS[metric].series.map((s) => s.key);
   const head = ["time_utc", ...DEFS[metric].series.map((s) => `${s.key}${s.unit ? `_${s.unit.replace(/[^a-z%°]/gi, "")}` : ""}`)];
@@ -41,7 +36,7 @@ function csv(metric: Metric, points: Point[]) {
   URL.revokeObjectURL(a.href);
 }
 
-export function HistoryView() {
+export function HistoryView({ owner = false }: { owner?: boolean }) {
   const params = useSearchParams();
   const router = useRouter();
   const path = usePathname();
@@ -107,46 +102,35 @@ export function HistoryView() {
             {new Date(from * 1000).toLocaleString()} to {new Date(to * 1000).toLocaleString()}. Drag across a chart to zoom in.
           </p>
         </div>
+        {owner && (
+          <nav aria-label="Same time elsewhere" className="flex gap-2 text-sm">
+            <Link
+              href={`/logs?${new URLSearchParams({ from: String(from), to: String(to) })}`}
+              className="rounded-lg border border-line px-3 py-1.5 hover:border-signal"
+            >
+              Logs for this time
+            </Link>
+            <Link
+              href={`/logs?${new URLSearchParams({ from: String(from), to: String(to) })}#failures`}
+              className="rounded-lg border border-line px-3 py-1.5 hover:border-signal"
+            >
+              Failures for this time
+            </Link>
+          </nav>
+        )}
       </header>
 
-      <div className="flex flex-wrap items-center gap-2">
-        <div role="group" aria-label="Range" className="flex flex-wrap gap-1 rounded-lg border border-line bg-surface p-1">
-          {PRESETS.map((p) => (
-            <button
-              key={p.key}
-              onClick={() => {
-                setNow(minute());
-                setRange({ range: p.key });
-              }}
-              aria-pressed={preset === p.key}
-              className={`rounded-md px-2.5 py-1 text-sm ${preset === p.key ? "bg-signal text-on-signal" : "text-muted hover:text-ink"}`}
-            >
-              {p.label}
-            </button>
-          ))}
-        </div>
-        <form
-          className="flex flex-wrap items-center gap-2 text-sm"
-          onSubmit={(e) => {
-            e.preventDefault();
-            const fd = new FormData(e.currentTarget);
-            const f = fromLocalInput(String(fd.get("from")));
-            const t = fromLocalInput(String(fd.get("to")));
-            if (f < t) zoom(f, t);
-          }}
-          key={`${from}-${to}`}
-        >
-          <label className="flex items-center gap-1.5">
-            <span className="text-muted">From</span>
-            <input name="from" type="datetime-local" defaultValue={toLocalInput(from)} className="rounded-md border border-line bg-surface px-2 py-1" />
-          </label>
-          <label className="flex items-center gap-1.5">
-            <span className="text-muted">to</span>
-            <input name="to" type="datetime-local" defaultValue={toLocalInput(to)} className="rounded-md border border-line bg-surface px-2 py-1" />
-          </label>
-          <button className="rounded-md border border-line bg-surface px-3 py-1 hover:border-signal">Show</button>
-        </form>
-      </div>
+      <TimeRange
+        presets={PRESETS}
+        preset={preset}
+        from={from}
+        to={to}
+        onPreset={(k) => {
+          setNow(minute());
+          setRange({ range: k });
+        }}
+        onRange={zoom}
+      />
 
       <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3" aria-busy={loading}>
         {METRICS.map((m) => {

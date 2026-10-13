@@ -4,7 +4,7 @@
 
 **Live vitals and a year of history for your Ubuntu server — from anywhere, on free tiers.**
 
-btop + Netdata on the server · a Next.js dashboard on Vercel · history in Neon Postgres · Telegram & email alerts
+one command on the server · live logs and failure history · a Next.js dashboard on Vercel · history in Neon Postgres · Telegram & email alerts
 
 [![Next.js](https://img.shields.io/badge/Next.js-App_Router-000000?logo=nextdotjs&logoColor=white)](https://nextjs.org)
 [![TypeScript](https://img.shields.io/badge/TypeScript-strict-3178C6?logo=typescript&logoColor=white)](https://www.typescriptlang.org)
@@ -66,7 +66,9 @@ Server Pulse has two parts that only talk over one HTTPS link:
 - 🔌 **Connect in the app** — paste your ngrok or Tailscale link on `/connect`; data starts flowing immediately, no redeploy.
 - 🌗 **Light, dark or system theme**, and a layout that works from a 320 px phone to a 4K screen.
 - 🖥️ **btop in the browser, done properly**: the Server page shows every core (heatmap with temperatures), memory, disks, network and processes, streamed live every second straight from your server.
-- 🔗 **Add a server with one command**: a one-time code pairs the agent with your dashboard; no links or passwords to copy.
+- 🔗 **Add a server with one command**: a one-time code pairs the agent with your dashboard; you approve the server before it's saved.
+- 🕰️ **Any time window, everywhere**: History, Logs and Failures share one *From … to …* picker; open a failure to jump to the log lines or the CPU/memory/disk charts around it, and from History to the logs and failures of the same window.
+- 📜 **Live logs and failure history**: the Logs page streams the server's system log live (filter by level, service, text) and keeps every failure (crashes, out-of-memory, failed services, disk errors, CPU/RAM/disk/temperature limits, offline) for 180 days. Secrets are removed on the server before anything is sent.
 - 🎞️ **Smooth at 60 fps** — live charts scroll continuously with zero added delay; pages switch instantly.
 - 🧭 **Built-in server setup guide** — `/setup` generates every command for your server (passwords, tunnel, alerts), checks for each step, a downloadable script and your final `SERVER_URL`.
 
@@ -279,9 +281,11 @@ server-pulse/
    ```bash
    curl -fsSL https://<your-dashboard>/install.sh | sudo bash -s -- ABCD-1234
    ```
-3. Paste it on your Ubuntu server. The first time it shows a Tailscale login link; open it and approve the server. The dashboard page moves on by itself and opens the live **Server** view.
+3. Paste it on your Ubuntu server. The first time it shows a Tailscale login link; open it and approve the machine. Back in the dashboard, check the server name and click **Approve and connect**; the page then opens the live **Server** view.
 
 Already use ngrok? Point it at `127.0.0.1:19998` (without `--basic-auth`) and add your address at the end of the command: `… ABCD-1234 https://your-name.ngrok-free.dev`.
+
+The options below are the classic kit (Netdata + Caddy), still supported.
 
 **Option A: accounts (no env vars to edit)**
 
@@ -654,6 +658,10 @@ CREATE TABLE settings (
 | `/api/backfill?chart=` | POST | Owner | 30-day import for one chart |
 | `/api/settings` | GET | Owner | Status for the Settings page |
 | `/api/settings/link`, `/api/settings/test` | POST | Owner | Save / test the server link (`DELETE` on link reverts to `SERVER_URL`) |
+| `/api/logs?prio=&unit=&after=&since=&until=` | GET | Owner | Recent log lines (fallback when the browser can't reach the agent), or a past window oldest first, 500 a page |
+| `/api/logs/token` | POST | Owner | 60-s single-use token for the live log stream |
+| `/api/events?before=&severity=&since=&until=` | GET | Owner | Failure history (newest first) and per-severity counts for the window |
+| `/api/agent/pair-approve` | POST | Owner | Approve or reject a server that redeemed a pairing code |
 | `/api/cron/sync` | GET | `CRON_SECRET` or throttled | Nightly sync, rollup, offline check |
 
 **Netdata endpoints used** (server, read-only)

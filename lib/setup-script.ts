@@ -283,17 +283,17 @@ HandleLidSwitch=ignore
 HandleLidSwitchExternalPower=ignore
 HandleLidSwitchDocked=ignore
 EOF
-# takes effect after the reboot in the next step (restarting logind now would end a desktop session)`,
+# the lid setting applies the next time the machine starts; the masked sleep targets above already keep it awake`,
     verify: `systemctl is-enabled sleep.target suspend.target   # both → masked`,
   });
 
   steps.push({
     id: "verify",
-    title: "Check everything survives a reboot",
-    why: "Every part runs as a systemd service, so after a reboot the same link should work with no manual steps.",
+    title: "Check everything is running",
+    why: "Every part runs as a systemd service that starts by itself with the machine, so the same link keeps working with no manual steps.",
     script: `systemctl is-active btop-web netdata caddy${i.tunnel === "ngrok" ? " ngrok-pulse" : ""}
-sudo reboot`,
-    verify: `systemctl is-active btop-web netdata caddy${i.tunnel === "ngrok" ? " ngrok-pulse" : ""}   # all → active`,
+systemctl is-enabled btop-web netdata caddy${i.tunnel === "ngrok" ? " ngrok-pulse" : ""}`,
+    verify: `systemctl is-enabled btop-web netdata caddy${i.tunnel === "ngrok" ? " ngrok-pulse" : ""}   # all → enabled (they start with the machine)`,
   });
   return steps;
 }

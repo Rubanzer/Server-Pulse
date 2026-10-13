@@ -95,10 +95,10 @@ func TestCollectorOnFixtureRoot(t *testing.T) {
 		t.Fatalf("temperature chart = %+v", got)
 	}
 	c.Sample(100)
-	write("proc/stat", "cpu  150 0 75 825 50 0 0 0 0 0\n")             // 100 ticks: 50 user, 25 system, 25 idle
-	write("proc/diskstats", "8 0 sda 1 0 3072 0 1 0 2048 0 0 0 0\n")    // +2048 sectors read = 1 MiB
+	write("proc/stat", "cpu  150 0 75 825 50 0 0 0 0 0\n")                          // 100 ticks: 50 user, 25 system, 25 idle
+	write("proc/diskstats", "8 0 sda 1 0 3072 0 1 0 2048 0 0 0 0\n")                // +2048 sectors read = 1 MiB
 	write("proc/net/dev", "h\nh\n eth0: 126000 0 0 0 0 0 0 0 1000 0 0 0 0 0 0 0\n") // +125000 B
-	s := c.Sample(102)                                                     // 2 s later
+	s := c.Sample(102)                                                              // 2 s later
 	if !near(s["system.cpu"][0], 50) || !near(s["system.cpu"][1], 25) {
 		t.Fatalf("cpu %v", s["system.cpu"])
 	}

@@ -28,10 +28,10 @@ func TestVerifyToken(t *testing.T) {
 	now := int64(1_000_000)
 	var nc nonceCache
 	good := mintToken("pw-abcdefghijkl", now+60, "nonce-0123456789ab")
-	if err := verifyToken(good, key, &nc, now); err != nil {
+	if err := verifyToken(good, key, &nc, now, "pulse"); err != nil {
 		t.Fatal(err)
 	}
-	if verifyToken(good, key, &nc, now) == nil {
+	if verifyToken(good, key, &nc, now, "pulse") == nil {
 		t.Fatal("replay must fail")
 	}
 	cases := map[string]string{
@@ -43,7 +43,7 @@ func TestVerifyToken(t *testing.T) {
 		"tampered":       strings.Replace(mintToken("pw-abcdefghijkl", now+60, "nonce-dddddddddddd"), "nonce-d", "nonce-e", 1),
 	}
 	for name, tok := range cases {
-		if verifyToken(tok, key, &nc, now) == nil {
+		if verifyToken(tok, key, &nc, now, "pulse") == nil {
 			t.Errorf("%s: accepted", name)
 		}
 	}
@@ -273,14 +273,21 @@ func TestClientIPCannotBeSpoofed(t *testing.T) {
 
 func TestSecureOrigin(t *testing.T) {
 	for o, want := range map[string]bool{
-		"https://pulse.vercel.app": true,
-		"http://pulse.vercel.app":  false,
-		"http://localhost:3000":    true,
-		"http://127.0.0.1:3150":    true,
+		"https://pulse.vercel.app":  true,
+		"http://pulse.vercel.app":   false,
+		"http://localhost:3000":     true,
+		"http://127.0.0.1:3150":     true,
 		"http://evil.localhost.com": false,
 	} {
 		if secureOrigin(o) != want {
 			t.Errorf("secureOrigin(%q) != %v", o, want)
 		}
 	}
+}
+
+func mintScoped(password, scope string, exp int64, nonce string) string {
+	m := hmac.New(sha256.New, streamKey(password))
+	signed := "v2." + scope + "." + strconv.FormatInt(exp, 10) + "." + nonce
+	m.Write([]byte(signed))
+	return signed + "." + base64.RawURLEncoding.EncodeToString(m.Sum(nil))
 }

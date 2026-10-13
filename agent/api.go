@@ -18,6 +18,7 @@ import (
 // (a dashboard link may point at the host root or at /history).
 type API struct {
 	hub      *Hub
+	events   *EventLog
 	store    *Store
 	charts   []chartDef
 	user     string
@@ -51,6 +52,8 @@ func (a *API) Handler() http.Handler {
 		if a.hub != nil {
 			mux.HandleFunc(prefix+"/api/v1/pulse", a.hub.Snapshot)
 		}
+		mux.HandleFunc(prefix+"/api/v1/logs", a.handleLogs)
+		mux.HandleFunc(prefix+"/api/v1/events", a.handleEvents)
 	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "text/plain; charset=utf-8")
@@ -61,6 +64,10 @@ func (a *API) Handler() http.Handler {
 		// the live stream authenticates with a short-lived token from the dashboard instead of the password
 		if a.hub != nil && strings.HasSuffix(r.URL.Path, "/api/v1/pulse/stream") {
 			a.hub.ServeStream(w, r)
+			return
+		}
+		if a.hub != nil && strings.HasSuffix(r.URL.Path, "/api/v1/logs/stream") {
+			a.hub.ServeLogs(w, r)
 			return
 		}
 		if !a.authorized(r) {
@@ -223,4 +230,56 @@ func hostInfo() map[string]any {
 		"ram_total":      int64(ramBytes),
 		"mirrored_hosts": []string{host},
 	}
+}
+
+// logs?n=&prio=&unit=&after=<cursor> — recent journal lines (basic auth), for the dashboard's fallback.
+func (a *API) handleLogs(w http.ResponseWriter, r *http.Request) {
+	f, err := parseFilter(r.URL.Query())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	n := atoi(r.URL.Query().Get("n"), 200)
+	if n < 1 || n > 1000 {
+		n = 200
+	}
+	after := r.URL.Query().Get("after")
+	if len(after) > 300 {
+		http.Error(w, "bad cursor", http.StatusBadRequest)
+		return
+	}
+	var entries []LogEntry
+	more := false
+	if f.Since > 0 { // a time window, oldest first, paged with the cursor
+		entries, more, err = rangeLogs(r.Context(), f, n, after)
+	} else {
+		entries, err = tailLogs(r.Context(), f, n, after)
+	}
+	if err != nil {
+		writeJSON(w, map[string]any{"entries": []LogEntry{}, "error": err.Error()})
+		return
+	}
+	if entries == nil {
+		entries = []LogEntry{}
+	}
+	cursor := after
+	if len(entries) > 0 {
+		cursor = entries[len(entries)-1].Cursor
+	}
+	writeJSON(w, map[string]any{"entries": entries, "cursor": cursor, "more": more, "range": f.Since > 0})
+}
+
+// events?after=<id>&updated=<unix> — failures recorded by this agent (basic auth).
+func (a *API) handleEvents(w http.ResponseWriter, r *http.Request) {
+	if a.events == nil {
+		writeJSON(w, map[string]any{"epoch": "", "events": []Event{}})
+		return
+	}
+	after, _ := strconv.ParseUint(r.URL.Query().Get("after"), 10, 64)
+	updated, _ := strconv.ParseInt(r.URL.Query().Get("updated"), 10, 64)
+	ev := a.events.Since(after, updated, 500)
+	if ev == nil {
+		ev = []Event{}
+	}
+	writeJSON(w, map[string]any{"epoch": a.events.Epoch, "events": ev})
 }

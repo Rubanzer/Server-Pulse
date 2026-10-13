@@ -11,7 +11,7 @@ export async function proxy(req: NextRequest) {
     if (pathname !== "/") url.searchParams.set("next", pathname + search);
     return NextResponse.redirect(url);
   }
-  if (s.role === "viewer" && (pathname.startsWith("/settings") || pathname.startsWith("/connect")))
+  if (s.role === "viewer" && (pathname.startsWith("/settings") || pathname.startsWith("/connect") || pathname.startsWith("/logs")))
     return NextResponse.redirect(new URL("/", req.url));
   return NextResponse.next();
 }

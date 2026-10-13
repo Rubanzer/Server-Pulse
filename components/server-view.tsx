@@ -190,11 +190,11 @@ export function ServerView() {
   if (conn === "unsupported")
     return (
       <section className="mx-auto mt-[6vh] max-w-xl rounded-xl border border-line bg-surface p-6">
-        <h1 className="text-xl font-semibold">The live server view needs the new agent</h1>
+        <h1 className="text-xl font-semibold">The live server view needs the Server Pulse agent</h1>
         <p className="mt-2 text-sm text-muted">{note}</p>
         <p className="mt-4 text-sm">
-          Open <a className="text-signal underline" href="/connect">Add server</a> and run the install command on your server. It updates the agent in place and keeps
-          your history.
+          Open <a className="text-signal underline" href="/connect">Add server</a> and run its one command on your server. It installs the latest agent over the old
+          one and keeps your history.
         </p>
       </section>
     );
