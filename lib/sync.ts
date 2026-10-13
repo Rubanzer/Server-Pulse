@@ -1,13 +1,13 @@
 import "server-only";
-import { and, desc, eq, gte, isNotNull, min, sql } from "drizzle-orm";
+import { and, desc, eq, gte, isNotNull, like, lt, lte, sql } from "drizzle-orm";
 import { chunk } from "@/lib/algo";
-import { METRICS, type Metric } from "@/lib/charts";
+import { DEFS, METRICS, type Metric } from "@/lib/charts";
 import { LIMITS, type ServerLink } from "@/lib/config";
 import { affected, db, schema } from "@/lib/db";
 import { ENV_SERVER } from "@/lib/db/schema";
 import { pruneEvents, pullAgentEvents, recordEvent } from "@/lib/events";
 import { mailConfigured, sendMail } from "@/lib/mail";
-import { info, series, type RawPoint } from "@/lib/netdata";
+import { agentCoverage, info, series, type RawPoint } from "@/lib/netdata";
 import { deleteSetting, getLink, getSetting, k, setSetting } from "@/lib/settings";
 import { flushUsage } from "@/lib/usage";
 
@@ -29,37 +29,85 @@ async function insert(sid: string, metric: Metric, points: RawPoint[], resolutio
   return n;
 }
 
+// ---------- HIS-1: catch-up sync ----------
+//
+// Each metric has a watermark: everything before it has been copied from the server. A sync copies
+// [watermark, now] oldest first in 1-day chunks and moves the watermark after each stored chunk, so
+// an outage of any length (up to the server's own 30 days) is filled in on the next run, a run that
+// times out resumes where it stopped, and a time the server returns nothing for (it was off) is not
+// asked for again.
+
+const syncedKey = (sid: string, m: Metric) => k(sid, `synced_to:${m}`);
+const CHUNK_SEC = 86_400;
+/** Never refill time the nightly rollup has already turned into hourly rows. */
+const REFILL_LIMIT_SEC = (LIMITS.rollupAfterDays - 1) * 86_400;
+
 /**
- * HIS-1: last 26 h at 1-minute resolution for every metric, in parallel. 5-minute backfill rows inside
- * the window are replaced, so the same minutes are never stored twice (no double-counted traffic).
+ * Minutes [a, b] on the agent's own grid: bucket width exactly 60 s, stamps on whole minutes. The
+ * same minute always gets the same timestamp, so fetching it twice can't store it twice.
  */
-async function syncRecent(link: ServerLink) {
-  const after = nowSec() - LIMITS.syncHours * 3600;
-  const points = LIMITS.syncHours * 60;
-  const results = await Promise.allSettled(
-    METRICS.map(async (m) => {
-      const pts = await series(link, m, after, nowSec(), points);
-      if (pts.length)
-        await db!
-          .delete(schema.samples)
-          .where(
-            and(
-              eq(schema.samples.serverId, link.sid),
-              eq(schema.samples.chart, m),
-              eq(schema.samples.resolutionS, LIMITS.backfillStepSec),
-              gte(schema.samples.ts, new Date(pts[0]!.t * 1000)),
-            ),
-          );
-      return insert(link.sid, m, pts, 60);
-    }),
-  );
+function fetchMinutes(link: ServerLink, m: Metric, a: number, b: number) {
+  const after = Math.floor(a / 60) * 60 + 1;
+  const n = Math.max(1, Math.ceil((b - after + 1) / 60));
+  return series(link, m, after, after + 60 * n - 1, n);
+}
+
+/** Store a chunk: the server is the source of truth for the span it answered, so replace that span. */
+async function replaceSpan(sid: string, m: Metric, pts: RawPoint[]) {
+  if (!pts.length) return 0;
+  await db!
+    .delete(schema.samples)
+    .where(
+      and(
+        eq(schema.samples.serverId, sid),
+        eq(schema.samples.chart, m),
+        lt(schema.samples.resolutionS, 3600),
+        gte(schema.samples.ts, new Date(pts[0]!.t * 1000)),
+        lte(schema.samples.ts, new Date(pts[pts.length - 1]!.t * 1000)),
+      ),
+    );
+  return insert(sid, m, pts, 60);
+}
+
+export type CatchUp = { rows: number; errors: string[]; pending: boolean; syncedTo: number | null };
+
+/** Copy everything the dashboard doesn't have yet, until `deadline` (ms). Safe to run concurrently with itself. */
+export async function catchUp(link: ServerLink, deadline: number): Promise<CatchUp> {
+  const sid = link.sid;
+  // what the agent holds and when it ran: labels gaps and tells where its history starts
+  const cov = await agentCoverage(link).catch(() => null);
+  if (cov) {
+    if (cov.oldest) await setSetting(k(sid, "agent_oldest"), String(cov.oldest));
+    await setSetting(k(sid, "agent_runs"), JSON.stringify(cov.runs.slice(-100).map((r) => ({ start: r.start, btime: r.btime }))));
+  }
+  const now = (cov?.now ?? nowSec()) - 120; // the current minute is still being averaged
+  const floor = now - REFILL_LIMIT_SEC;
   let rows = 0;
   const errors: string[] = [];
-  results.forEach((r, i) => {
-    if (r.status === "fulfilled") rows += r.value;
-    else errors.push(`${METRICS[i]}: ${(r.reason as Error).message}`);
-  });
-  return { rows, errors };
+  const marks: number[] = [];
+  await Promise.all(
+    METRICS.map(async (m) => {
+      let mark = Number(await getSetting(syncedKey(sid, m))) || 0;
+      // first time: start where the agent's history starts (Netdata: 30 days back)
+      let from = mark ? mark - 300 : (cov?.oldest ?? floor);
+      from = Math.max(from, floor);
+      try {
+        while (from < now && Date.now() < deadline) {
+          const to = Math.min(now, from + CHUNK_SEC);
+          const stored = await replaceSpan(sid, m, await fetchMinutes(link, m, from, to));
+          rows += stored; // not `rows += await …`: that reads `rows` before the await and loses the other charts' counts
+          mark = to;
+          await setSetting(syncedKey(sid, m), String(mark));
+          from = to;
+        }
+      } catch (e) {
+        errors.push(`${DEFS[m].label}: ${(e as Error).message}`);
+      }
+      marks.push(mark);
+    }),
+  );
+  const syncedTo = marks.length ? Math.min(...marks) : null;
+  return { rows, errors, pending: syncedTo === null || syncedTo < now - 600, syncedTo };
 }
 
 /** HIS-5: atomically replace 1-min / 5-min rows older than 30 days with hourly averages. Whole hours only, all servers. */
@@ -100,6 +148,7 @@ async function finishRun(id: number | null, rows: number, status: string, error?
 /** HIS-10: one email per outage after about a day offline; cleared when the server answers again. */
 async function trackOffline(sid: string, online: boolean, error?: string) {
   if (online) {
+    await setSetting(k(sid, "last_contact"), String(nowSec()));
     const was = Number(await getSetting(k(sid, "offline_since"))) || 0;
     if (was) {
       const mins = Math.max(1, Math.round((nowSec() - was) / 60));
@@ -111,8 +160,9 @@ async function trackOffline(sid: string, online: boolean, error?: string) {
   }
   const since = Number(await getSetting(k(sid, "offline_since"))) || 0;
   if (!since) {
+    const lastContact = Number(await getSetting(k(sid, "last_contact"))) || nowSec();
     await recordEvent(sid, "critical", "offline", `Server unreachable: ${error ?? "no answer"}`);
-    return setSetting(k(sid, "offline_since"), String(nowSec()));
+    return setSetting(k(sid, "offline_since"), String(lastContact));
   }
   const due = nowSec() - since >= LIMITS.offlineEmailAfterSec - LIMITS.cronSlackSec;
   // Only the owner-configured address (ALERT_EMAIL_TO) for the env server. Account emails are not
@@ -122,7 +172,7 @@ async function trackOffline(sid: string, online: boolean, error?: string) {
     const sent = await sendMail(
       "[Server Pulse] server unreachable for over a day",
       `Server Pulse has not reached your server since ${new Date(since * 1000).toUTCString()}.\n\nLast error: ${error}\n\n` +
-        `Netdata keeps 30 days locally, so bring it back before then and the next sync fills the gap.`,
+        `Your server keeps 30 days of readings, so once it answers again the next sync fills the gap.`,
     );
     if (sent) await setSetting(k(sid, "offline_mailed"), "1");
   }
@@ -143,7 +193,7 @@ export async function syncServer(link: ServerLink | null): Promise<SyncResult> {
   try {
     await info(link);
     await trackOffline(link.sid, true);
-    const { rows, errors } = await syncRecent(link);
+    const { rows, errors } = await catchUp(link, Date.now() + LIMITS.syncBudgetMs);
     const status = errors.length === 0 ? "ok" : errors.length === METRICS.length ? "error" : "partial";
     result = { status, rows, error: errors.join("; ") || undefined };
     if (status !== "ok") await recordEvent(link.sid, status === "error" ? "error" : "warning", "sync", `History sync ${status}: ${result.error}`);
@@ -189,47 +239,30 @@ export async function syncAll() {
   return { servers: Object.keys(results).length, skipped: Math.max(0, sids.length - next), rolledUp, results };
 }
 
-// ---------- HIS-2: backfill ----------
+// ---------- HIS-2: catch up while the owner is looking ----------
 
-const doneKey = (sid: string, m: Metric) => k(sid, `backfill_done:${m}`);
-
-export async function backfillPending(sid: string): Promise<Metric[]> {
-  if (!db) return [];
-  const rows = await db
-    .select()
+/** True when the dashboard is more than an hour behind the server (or has never synced). */
+export async function catchUpPending(sid: string): Promise<boolean> {
+  if (!db) return false;
+  const marks = await db
+    .select({ value: schema.settings.value })
     .from(schema.settings)
-    .where(sql`${schema.settings.key} LIKE ${k(sid, "backfill_done:%")}`);
-  const done = new Set(rows.map((r) => r.key));
-  return METRICS.filter((m) => !done.has(doneKey(sid, m)));
+    .where(like(schema.settings.key, k(sid, "synced_to:%")));
+  if (marks.length < METRICS.length) return true;
+  return Math.min(...marks.map((m) => Number(m.value) || 0)) < nowSec() - 3600;
 }
 
-/**
- * 30 days at 5-minute resolution for ONE metric (one request keeps every call far below the function
- * time cap). Stops at the oldest 1-minute row, and the nightly sync replaces any 5-minute rows inside
- * its own window, so the two never overlap.
- */
-export async function backfill(link: ServerLink, metric: Metric): Promise<number> {
+/** One budgeted step of catch-up for the owner's page; call again while `pending`. */
+export async function catchUpStep(link: ServerLink): Promise<CatchUp> {
   if (!db) throw new Error("No database connected");
-  const sid = link.sid;
-  const id = await startRun(sid, "backfill");
+  const id = await startRun(link.sid, "backfill");
   try {
-    const [first] = await db
-      .select({ ts: min(schema.samples.ts) })
-      .from(schema.samples)
-      .where(and(eq(schema.samples.serverId, sid), eq(schema.samples.chart, metric), eq(schema.samples.resolutionS, 60)));
-    const before = first?.ts ? Math.floor(new Date(first.ts).getTime() / 1000) - 1 : nowSec();
-    const after = nowSec() - LIMITS.backfillDays * 86400;
-    let rows = 0;
-    if (before > after) {
-      const points = Math.ceil((before - after) / LIMITS.backfillStepSec);
-      rows = await insert(sid, metric, await series(link, metric, after, before, points), LIMITS.backfillStepSec);
-    }
-    await setSetting(doneKey(sid, metric), new Date().toISOString());
-    await finishRun(id, rows, "ok", metric);
-    await flushUsage(sid);
-    return rows;
+    const r = await catchUp(link, Date.now() + LIMITS.catchUpStepMs);
+    await finishRun(id, r.rows, r.errors.length ? "partial" : "ok", r.errors.join("; ") || undefined);
+    await flushUsage(link.sid);
+    return r;
   } catch (e) {
-    await finishRun(id, 0, "error", `${metric}: ${(e as Error).message}`);
+    await finishRun(id, 0, "error", (e as Error).message);
     throw e;
   }
 }

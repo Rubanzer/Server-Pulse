@@ -52,13 +52,23 @@ export async function pullAgentEvents(link: ServerLink): Promise<number> {
   if (!res) return 0; // older agent without failure tracking
   let cursor = Number(after) || 0;
   if (res.epoch !== epoch) cursor = 0;
-  const fresh = res.epoch !== epoch ? (await agentEvents(link, 0, 0))?.events ?? [] : res.events;
-  await saveAgentEvents(sid, res.epoch, fresh);
-  for (const e of fresh) cursor = Math.max(cursor, e.id);
-  await setSetting(k(sid, "events_epoch"), res.epoch);
-  await setSetting(k(sid, "events_after"), String(cursor));
+  let page = res.epoch !== epoch ? (await agentEvents(link, 0, 0))?.events ?? [] : res.events;
+  let total = 0;
+  // drain the whole backlog (an outage can leave thousands): pages until one comes back short.
+  // ponytail: agents answer up to 500 per page (1.3: 2000, its whole ring); 10 pages is plenty.
+  for (let i = 0; i < 10; i++) {
+    await saveAgentEvents(sid, res.epoch, page);
+    total += page.length;
+    const before = cursor;
+    for (const e of page) cursor = Math.max(cursor, e.id);
+    await setSetting(k(sid, "events_epoch"), res.epoch);
+    await setSetting(k(sid, "events_after"), String(cursor));
+    if (page.length < 500 || cursor === before) break;
+    page = (await agentEvents(link, cursor, 0))?.events ?? [];
+  }
+  // only now: repeats are re-read from this time on, so a truncated pull can't skip any
   await setSetting(k(sid, "events_pulled_at"), String(started - 60)); // overlap a minute for repeats
-  return fresh.length;
+  return total;
 }
 
 async function saveAgentEvents(serverId: string, epoch: string, list: AgentEvent[]) {

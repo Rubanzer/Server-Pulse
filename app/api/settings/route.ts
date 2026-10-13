@@ -4,7 +4,7 @@ import { LIMITS, maskLink } from "@/lib/config";
 import { db } from "@/lib/db";
 import { mailConfigured } from "@/lib/mail";
 import { getLink } from "@/lib/settings";
-import { backfillPending, recentRuns, storageStats } from "@/lib/sync";
+import { catchUpPending, recentRuns, storageStats } from "@/lib/sync";
 import { getUsage } from "@/lib/usage";
 
 export const dynamic = "force-dynamic";
@@ -19,7 +19,7 @@ export async function GET(req: NextRequest) {
   const [runs, storage, pending, usage] = await Promise.all([
     safe(recentRuns(s.sid, 10), []),
     safe(storageStats(s.sid), null),
-    state.link ? safe(backfillPending(s.sid), []) : Promise.resolve([]),
+    state.link ? safe(catchUpPending(s.sid), false) : Promise.resolve(false),
     state.link?.tunnel === "ngrok" ? safe(getUsage(s.sid), null) : Promise.resolve(null),
   ]);
   return Response.json({

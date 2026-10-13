@@ -479,3 +479,45 @@ The *Failures* tab shows 24-h totals per severity, a severity filter, failures g
 **Product review fixes**: the Live page's empty state and demo banner point to *Add server* (the one command), not the classic kit; the setup guide no longer asks for a reboot or a service restart (the last step checks the services are enabled so they start with the machine); messages about older agents say to run the *Add server* command, which installs the latest agent over the old one and keeps history; the offline notice no longer claims Netdata on agent servers; the connection test says "version" instead of "Netdata"; failure day headers no longer slide under the sticky nav; the phone nav fades at the edge so it's clear it scrolls to Add server and Settings; the *Is this your server?* card moves focus to *Approve and connect*; source names for lines from login sessions show the program (`backup.sh`) instead of `session-4.scope`.
 
 **Verified**: 27 Go tests on Linux (incl. new scrubber cases, repeat write throttling and file size, critical flood budget, time-window argument validation); lint, type check, 31 JS tests, production build; end to end on Ubuntu 24.04 (WSL) + embedded Postgres: a 1-hour window loads 500 lines and *Load the next 500 lines* continues to 1,000; Failures 24 h tiles match the list; *Logs around this time* opens the right window filtered to the failure's source; History links carry the window; no horizontal scroll at 375 px; no console errors.
+
+### Update: honest history, automatic gap refill, efficiency (design council)
+
+Four independent reviewers (time-series data engineer, sync/reliability researcher, data-viz/UX researcher, performance/cost engineer) read the code and agreed on the problems and fixes below.
+
+**What was wrong**
+- Picking *1 year* on a server monitored for 3 months looked like a year of data: the axis quietly shrank to the data and nothing said where monitoring began.
+- Time when the server was off was drawn as a smooth line across the hole (missing buckets were simply absent, so the chart's gap handling never triggered).
+- The sync re-fetched a fixed 26 hours once a day. An outage of the internet, tunnel or dashboard longer than that left a **permanent** hole, even though the server keeps 30 days. Its windows also landed on a different 61-second grid every run, so overlapping hours were **stored twice**.
+- The failure history pulled at most 500 failures a day; failures logged while the agent was down (often the crash that took the server down) were never seen.
+
+**Honest charts (History)**
+- The axis always covers the range you asked for. Time before this server's first reading is shaded **"Before monitoring started (13 Oct)"**, the header says *"Monitoring started 13 Oct 2026, so this range holds 3 months of data"*, with **Show only that**.
+- Every hole is a real break in the line with a hatched band and its reason (pattern + text, not colour alone):
+  - **Server off**: the machine booted after the hole began (from the agent's start history);
+  - **Agent stopped**: the agent restarted within the same boot;
+  - **Filling from server…**: the dashboard hasn't copied this time yet; it will;
+  - **No data**: nothing recorded and no restart explains it (for example before agent 1.3).
+- Lines are straight segments (curves overshoot next to gaps). Averages, 95th percentile and peaks count only measured time, and every card shows **Coverage** (share of the monitored part of the range with readings, from the stored rows' resolution, exact at any zoom).
+- A chart that never had a reading (no temperature sensors on a VM) says so instead of showing a gap.
+- One request for all seven charts (one SQL query with weighted averages: buckets mixing hourly and 1-minute rows are no longer skewed); windows that ended over an hour ago are cacheable for 2 minutes.
+
+**Reports**: always 12 months. Months before monitoring say *Before monitoring started*; months without data say *Not monitored*; the current month says *so far*, the first month *from 13 Oct*; a **Coverage** column shows how much of each month was measured.
+
+**Automatic gap refill (sync v2)**
+- A watermark per server and chart: everything before it has been copied. A sync copies `[watermark, now]` oldest first in 1-day chunks and moves the watermark after each stored chunk, so any outage up to the server's 30 days is filled in, a run that times out resumes where it stopped, and time the server returned nothing for (it was off) isn't asked for again. Refills never reach into hours already rolled up.
+- Requests use the agent's own minute grid (bucket width exactly 60 s, stamps on whole minutes), so a minute fetched twice is stored once; each chunk replaces the span the server answered for, which also cleans up the old duplicate rows.
+- Besides the nightly cron, catch-up runs while the owner has any page open (checked at most every 10 minutes per tab, 40-s steps, small *Copying missing history from your server* notice). It replaces the one-time 30-day import; Settings has **Fill missing history**.
+- The failure history drains its whole backlog after an outage (pages until short; the repeat cursor only moves after a complete drain).
+- The offline alert counts from the last successful contact, not from the cron that noticed.
+
+**Agent 1.3**
+- `GET /api/v1/coverage`: `now`, `oldest`, the covered `segments` of the 1-minute history and `runs` (each start with its boot id and boot time, `runs.jsonl`, last 500). The dashboard uses it to tell *server off* from *agent stopped*.
+- The failure watcher remembers its journal position (`journal.cursor`, saved every 10 s): anything logged while the agent was stopped or the machine was booting is classified on start (positions older than a week are ignored; an invalid one falls back to the tail).
+- A clock stepped backwards (NTP) no longer scrambles the ring buffers: readings older than the last one are dropped until time catches up.
+- `/api/v1/events` returns up to its whole ring (2,000) in one answer.
+
+**Efficiency**: one History request instead of seven; the server link is cached 10 minutes per instance and the ngrok counter flushed every 60 requests, so an open Live tab no longer keeps a serverless Postgres awake around the clock; the row-count race in catch-up reporting is fixed.
+
+**Decided not to do (yet)**: Live reading the agent's stream instead of polling (big UI change; the Server view already streams); hourly peak columns for >30-day ranges; a storage diet (dropping `id`, `real[]` values, 7-day 1-minute retention) — each worth its own change once more servers share one free database.
+
+**Verified**: 30 Go tests on Linux (new: coverage segments split at gaps, clock step back, runs + saved cursor); 34 JS tests (new: gap finding, gap reasons, coverage); lint, type check, production build; end to end on Ubuntu 24.04 (WSL) + embedded Postgres: first catch-up copied the agent's whole history in one 0.2-s step; a real outage (the WSL VM shut down 10:00–10:33 and booted again) shows as *Server off*; an earlier hole before agent 1.3 shows *No data*; 1 year / 6 hours / 2 days agree on 57 % coverage; the temperature chart on a VM explains the missing sensors; Reports lists 12 months with *Before monitoring started*; no horizontal scroll at 375 px; no console errors.

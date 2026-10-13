@@ -268,3 +268,46 @@ export class Lru<K, V> {
     if (this.m.size > this.max) this.m.delete(this.m.keys().next().value as K);
   }
 }
+
+// ---------- honest history: gaps and coverage ----------
+
+export type GapReason = "off" | "agent" | "pending" | "nodata";
+export type Gap = { from: number; to: number; reason: GapReason };
+export type RunInfo = { start: number; btime: number };
+
+/**
+ * Holes in a series: stretches of [start, end] with no point for longer than `slack(t)` seconds
+ * (2 buckets, or 2 rows of the stored resolution, whichever is larger). Points must be sorted. O(n).
+ */
+export function findGaps(times: readonly number[], start: number, end: number, slack: (t: number) => number): { from: number; to: number }[] {
+  if (end <= start) return [];
+  const out: { from: number; to: number }[] = [];
+  let prev = start;
+  for (const t of times) {
+    if (t < start) continue;
+    if (t > end) break;
+    if (t - prev > slack(t)) out.push({ from: prev, to: t });
+    prev = t;
+  }
+  if (end - prev > slack(end)) out.push({ from: prev, to: end });
+  return out;
+}
+
+/**
+ * Why a hole exists. "pending": the dashboard hasn't copied this time from the server yet (it will).
+ * Otherwise the agent's start history tells: the machine booted after the hole began → it was off;
+ * the agent started again in the same boot → only the agent was stopped.
+ */
+export function gapReason(g: { from: number; to: number }, syncedTo: number | null, runs: readonly RunInfo[]): GapReason {
+  if (syncedTo !== null && g.to > syncedTo) return "pending";
+  const restart = runs.find((r) => r.start > g.from && r.start <= g.to + 600);
+  if (!restart) return "nodata";
+  return restart.btime > g.from ? "off" : "agent";
+}
+
+/** Share of [start, end] not inside a gap, 0..1. */
+export function coverage(start: number, end: number, gaps: readonly { from: number; to: number }[]): number {
+  if (end <= start) return 0;
+  const missing = gaps.reduce((s, g) => s + Math.max(0, Math.min(g.to, end) - Math.max(g.from, start)), 0);
+  return Math.max(0, Math.min(1, 1 - missing / (end - start)));
+}

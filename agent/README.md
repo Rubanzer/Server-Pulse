@@ -103,6 +103,7 @@ Passwords, tokens, keys and credentials in URLs are removed from every line **be
 | `GET /api/v1/logs?n=&prio=&unit=&after=&since=&until=` | password | Recent lines, lines after a cursor, or a time window (unix seconds) oldest first with `more` for paging |
 | `GET /api/v1/events?after=&updated=` | password | Failures after an id (plus repeats updated since) |
 | `GET /api/v1/logs/stream?prio=&unit=` | logs-scoped token | Live lines (gzip NDJSON), ≤ 3 viewers |
+| `GET /api/v1/coverage` | password | What the agent holds (`oldest`, covered `segments`) and its `runs` (start, boot id, boot time), so the dashboard can label gaps |
 
 ## Security
 

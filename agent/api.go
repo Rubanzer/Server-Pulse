@@ -25,6 +25,7 @@ type API struct {
 	pass     string
 	info     map[string]any
 	statusFn func() map[string]any // tunnel state for /agent/status (local only)
+	runs     []Run                 // agent starts, for /api/v1/coverage
 }
 
 func NewAPI(hub *Hub, store *Store, charts []chartDef, user, pass string, statusFn func() map[string]any) *API {
@@ -54,6 +55,7 @@ func (a *API) Handler() http.Handler {
 		}
 		mux.HandleFunc(prefix+"/api/v1/logs", a.handleLogs)
 		mux.HandleFunc(prefix+"/api/v1/events", a.handleEvents)
+		mux.HandleFunc(prefix+"/api/v1/coverage", a.handleCoverage)
 	}
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("content-type", "text/plain; charset=utf-8")
@@ -277,7 +279,7 @@ func (a *API) handleEvents(w http.ResponseWriter, r *http.Request) {
 	}
 	after, _ := strconv.ParseUint(r.URL.Query().Get("after"), 10, 64)
 	updated, _ := strconv.ParseInt(r.URL.Query().Get("updated"), 10, 64)
-	ev := a.events.Since(after, updated, 500)
+	ev := a.events.Since(after, updated, maxEvents) // the whole ring fits one answer
 	if ev == nil {
 		ev = []Event{}
 	}

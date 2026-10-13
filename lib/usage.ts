@@ -4,9 +4,10 @@ import { LIMITS, type ServerLink } from "@/lib/config";
 import { getSetting, incrementSetting, k } from "@/lib/settings";
 
 // ngrok budget meter (LIV-5), per server. Counts every request this app sends through an ngrok tunnel.
-// ponytail: per-instance counters flushed to Postgres every FLUSH_EVERY requests; a recycled instance
-// can lose up to FLUSH_EVERY-1 counts, so the meter slightly under-reads. Use ngrok's API if exactness matters.
-const FLUSH_EVERY = 10;
+// ponytail: per-instance counters flushed to Postgres every FLUSH_EVERY requests (about every 10 min of
+// live view at one request per 10 s, so the database can sleep in between); a recycled instance can lose
+// up to FLUSH_EVERY-1 counts, so the meter slightly under-reads. Use ngrok's API if exactness matters.
+const FLUSH_EVERY = 60;
 const pending = new Map<string, number>();
 
 const monthKey = (sid: string, d = new Date()) => k(sid, `ngrok_usage:${d.toISOString().slice(0, 7)}`);

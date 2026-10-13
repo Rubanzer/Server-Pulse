@@ -168,12 +168,13 @@ func cmdRun(args []string) error {
 	api := NewAPI(hub, store, col.Charts(), dashUser, cfg.Password, ts.snapshot)
 	events := OpenEventLog(stateDir)
 	api.events = events
+	api.runs = recordRun(stateDir, time.Now().Unix())
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
 	// failures: error-level journal lines and crashes, plus sustained threshold breaches
-	go watchJournal(ctx, events)
+	go watchJournal(ctx, events, filepath.Join(stateDir, "journal.cursor"))
 	var th thresholds
 
 	// sampler: once a second, on the second

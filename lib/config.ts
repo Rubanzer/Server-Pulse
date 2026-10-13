@@ -5,9 +5,10 @@ export const LIMITS = {
   ngrokMonthlyRequests: 20_000,
   ngrokPauseAt: 0.8,
   requestTimeoutMs: 8_000,
-  syncHours: 26,
-  backfillDays: 30,
-  backfillStepSec: 300,
+  /** Time one server's nightly catch-up may take before the next server gets its turn. */
+  syncBudgetMs: 20_000,
+  /** One catch-up step while the owner has the dashboard open (repeated until up to date). */
+  catchUpStepMs: 40_000,
   rollupAfterDays: 30,
   /** Ranges that end within this window read Netdata directly (full detail); older ones read Postgres. */
   directWindowSec: 24 * 3600,

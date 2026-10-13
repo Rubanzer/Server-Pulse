@@ -15,7 +15,46 @@ export type MonthRow = {
   netInGB: number | null;
   netOutGB: number | null;
   diskPeak: number | null;
+  /** share of the month (so far) with readings, 0..1; null when nothing was recorded */
+  coverage: number | null;
+  /** monitoring started during this month (unix seconds), else null */
+  startedAt: number | null;
+  /** before monitoring started, or nothing recorded at all */
+  state: "monitored" | "before" | "none";
 };
+
+/** Every one of the last 12 months, newest first, with empty months marked instead of left out. */
+export function fillMonths(rows: MonthRow[], first: number | null, now = Date.now() / 1000): MonthRow[] {
+  const byMonth = new Map(rows.map((r) => [r.month, r]));
+  const d = new Date(now * 1000);
+  const out: MonthRow[] = [];
+  for (let i = 0; i < 12; i++) {
+    const start = Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - i, 1) / 1000;
+    const end = Date.UTC(d.getUTCFullYear(), d.getUTCMonth() - i + 1, 1) / 1000;
+    const r = byMonth.get(start);
+    if (r) {
+      out.push(r);
+      continue;
+    }
+    const before = first === null || end <= first;
+    out.push({
+      month: start,
+      cpuAvg: null,
+      cpuPeak: null,
+      ramAvg: null,
+      ramPeak: null,
+      loadAvg: null,
+      loadPeak: null,
+      netInGB: null,
+      netOutGB: null,
+      diskPeak: null,
+      coverage: null,
+      startedAt: null,
+      state: before ? "before" : "none",
+    });
+  }
+  return out;
+}
 
 const KBIT_S_TO_GB = 1 / 8 / 1024 / 1024; // kbit/s × s → kB → GB
 
@@ -27,7 +66,7 @@ export async function monthlyReport(sid: string): Promise<MonthRow[]> {
   if (!db) return [];
   const r = await db.execute(sql`
     WITH r AS (
-      SELECT date_trunc('month', ts, 'UTC') AS m, chart, resolution_s AS w,
+      SELECT date_trunc('month', ts, 'UTC') AS m, chart, resolution_s AS w, ts,
              (SELECT sum(value::float8) FROM jsonb_each_text("values")) AS total,
              ("values"->>'used')::float8 AS used,
              ("values"->>'avail')::float8 AS avail,
@@ -46,10 +85,13 @@ export async function monthlyReport(sid: string): Promise<MonthRow[]> {
       max(load1) FILTER (WHERE chart = 'load') AS load_peak,
       sum(rx * w) FILTER (WHERE chart = 'net') * ${KBIT_S_TO_GB} AS net_in,
       sum(tx * w) FILTER (WHERE chart = 'net') * ${KBIT_S_TO_GB} AS net_out,
-      max(100 * used / nullif(used + avail, 0)) FILTER (WHERE chart = 'disk') AS disk_peak
+      max(100 * used / nullif(used + avail, 0)) FILTER (WHERE chart = 'disk') AS disk_peak,
+      sum(w) FILTER (WHERE chart = 'cpu') AS covered_s,
+      extract(epoch FROM min(ts))::bigint AS first_ts,
+      extract(epoch FROM least(m + interval '1 month', now()) - m)::float8 AS elapsed_s
     FROM r GROUP BY m ORDER BY m DESC`);
   const n = (v: unknown) => (v == null ? null : Number(v));
-  return (r.rows as Record<string, unknown>[]).map((x) => ({
+  const rows = (r.rows as Record<string, unknown>[]).map((x): MonthRow => ({
     month: Number(x.month),
     cpuAvg: n(x.cpu_avg),
     cpuPeak: n(x.cpu_peak),
@@ -60,7 +102,23 @@ export async function monthlyReport(sid: string): Promise<MonthRow[]> {
     netInGB: n(x.net_in),
     netOutGB: n(x.net_out),
     diskPeak: n(x.disk_peak),
+    coverage: x.covered_s == null ? null : Math.min(1, Number(x.covered_s) / Math.max(1, Number(x.elapsed_s))),
+    startedAt: null,
+    state: "monitored",
   }));
+  // the oldest month with data is when monitoring started: its coverage counts from that moment
+  const oldest = rows[rows.length - 1];
+  const firstTs = oldest ? Number((r.rows[r.rows.length - 1] as Record<string, unknown>).first_ts) : null;
+  if (oldest && firstTs && firstTs > oldest.month) {
+    oldest.startedAt = firstTs;
+    const covered = oldest.coverage === null ? null : oldest.coverage * Number((r.rows[r.rows.length - 1] as Record<string, unknown>).elapsed_s);
+    const end = Math.min(
+      Date.now() / 1000,
+      Date.UTC(new Date(oldest.month * 1000).getUTCFullYear(), new Date(oldest.month * 1000).getUTCMonth() + 1, 1) / 1000,
+    );
+    if (covered !== null) oldest.coverage = Math.min(1, covered / Math.max(1, end - firstTs));
+  }
+  return fillMonths(rows, firstTs);
 }
 
 /** Same shape from demo data, sampled hourly. */
@@ -93,6 +151,9 @@ export function demoReport(): MonthRow[] {
       netInGB: acc.rx * KBIT_S_TO_GB,
       netOutGB: acc.tx * KBIT_S_TO_GB,
       diskPeak: peak(acc.disk),
+      coverage: 1,
+      startedAt: null,
+      state: "monitored",
     });
   }
   return out;

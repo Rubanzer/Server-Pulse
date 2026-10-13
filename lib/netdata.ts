@@ -289,3 +289,24 @@ export async function agentEvents(link: ServerLink, after: number, updated: numb
     throw e;
   }
 }
+
+// ---------- coverage (agent 1.3) ----------
+
+export type AgentRun = { start: number; boot: string; btime: number };
+const CoverageSchema = z.looseObject({
+  now: z.number(),
+  oldest: z.number(),
+  segments: z.array(z.tuple([z.number(), z.number()])),
+  runs: z.array(z.looseObject({ start: z.number(), boot: z.string(), btime: z.number() })),
+});
+
+/** What the agent holds and when it ran; null for older agents and Netdata. */
+export async function agentCoverage(link: ServerLink): Promise<{ now: number; oldest: number; segments: [number, number][]; runs: AgentRun[] } | null> {
+  try {
+    const r = await getNewEndpoint(link, "/api/v1/coverage", CoverageSchema);
+    return { now: r.now, oldest: r.oldest, segments: r.segments, runs: r.runs as AgentRun[] };
+  } catch (e) {
+    if (e instanceof NetdataError && e.status === 404) return null;
+    throw e;
+  }
+}

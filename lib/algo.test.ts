@@ -159,3 +159,32 @@ test("composeLink builds a safe link from fields", () => {
   assert.equal(composeLink("https://x.ngrok-free.dev/", "dashboard", "p@ss:w/rd"), "https://dashboard:p%40ss%3Aw%2Frd@x.ngrok-free.dev/history");
   assert.equal(composeLink("old:creds@host.ts.net", "", "pw"), "https://dashboard:pw@host.ts.net/history");
 });
+
+test("findGaps finds leading, middle and trailing holes, nothing in dense data", async () => {
+  const { findGaps } = await import("./algo.ts");
+  const dense = Array.from({ length: 60 }, (_, i) => 1000 + i * 60);
+  assert.deepEqual(findGaps(dense, 1000, 1000 + 59 * 60, () => 120), []);
+  const holed = [...dense.slice(0, 10), ...dense.slice(40)];
+  assert.deepEqual(findGaps(holed, 1000, 1000 + 59 * 60, () => 120), [{ from: 1000 + 9 * 60, to: 1000 + 40 * 60 }]);
+  // asked for more than exists: the hole before the first and after the last point
+  assert.deepEqual(findGaps([5000, 5060], 1000, 9000, () => 120), [
+    { from: 1000, to: 5000 },
+    { from: 5060, to: 9000 },
+  ]);
+});
+
+test("gapReason: pending past the sync point, off after a reboot, agent when only it restarted", async () => {
+  const { gapReason } = await import("./algo.ts");
+  const g = { from: 1000, to: 5000 };
+  assert.equal(gapReason(g, 3000, []), "pending");
+  assert.equal(gapReason(g, 9000, [{ start: 5100, btime: 5050 }]), "off");
+  assert.equal(gapReason(g, 9000, [{ start: 5100, btime: 100 }]), "agent");
+  assert.equal(gapReason(g, 9000, [{ start: 200, btime: 100 }]), "nodata");
+});
+
+test("coverage is the share of the window outside gaps", async () => {
+  const { coverage } = await import("./algo.ts");
+  assert.equal(coverage(0, 100, []), 1);
+  assert.equal(coverage(0, 100, [{ from: 0, to: 25 }, { from: 90, to: 200 }]), 0.65);
+  assert.equal(coverage(10, 10, []), 0);
+});
