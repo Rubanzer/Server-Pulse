@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -58,5 +59,32 @@ func TestDamagedHistoryFileStartsFresh(t *testing.T) {
 	s.Add(1000, map[string][]float64{}) // must not panic
 	if s.coarse.Head != 0 && s.coarse.Len > coarseCap {
 		t.Fatalf("damaged ring kept: head %d len %d", s.coarse.Head, s.coarse.Len)
+	}
+}
+
+func TestNgrokUnitFlagsAndUnsafePaths(t *testing.T) {
+	u := ngrokUnit("antpc", "/usr/local/bin/ngrok", "https://bunch-numbly-accent.ngrok-free.dev", true)
+	if !strings.Contains(u, "ExecStart=/usr/local/bin/ngrok http 19998 --url=https://bunch-numbly-accent.ngrok-free.dev --log=stdout") || !strings.Contains(u, "User=antpc") {
+		t.Fatalf("unit:\n%s", u)
+	}
+	old := ngrokUnit("antpc", "/usr/local/bin/ngrok", "https://bunch-numbly-accent.ngrok-free.dev", false)
+	if !strings.Contains(old, " --domain=bunch-numbly-accent.ngrok-free.dev ") {
+		t.Fatalf("older ngrok needs --domain:\n%s", old)
+	}
+	// a file in a world-writable directory is never run as root at boot
+	dir := t.TempDir()
+	os.Chmod(dir, 0o777)
+	p := filepath.Join(dir, "ngrok")
+	os.WriteFile(p, []byte("x"), 0o755)
+	if rootOwnedPath(p) {
+		t.Fatal("a world-writable directory was accepted")
+	}
+	if !rootOwnedPath("/") {
+		t.Fatal("/ should be root-owned")
+	}
+	for _, bad := range []string{"https://x.ngrok-free.dev\nExecStartPre=/bin/sh", "https://a b.dev", "https://%h.dev", "https://$x.dev"} {
+		if safeHost.MatchString(bad) {
+			t.Fatalf("unsafe address accepted: %q", bad)
+		}
 	}
 }

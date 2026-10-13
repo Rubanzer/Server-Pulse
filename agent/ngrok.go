@@ -15,6 +15,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -227,7 +228,11 @@ const ngrokUnitPath = "/etc/systemd/system/" + ngrokUnitName + ".service"
 // network.target, not network-online (ngrok reconnects by itself), so it is up within seconds of boot.
 // Failing (quota used up, offline) it retries every 10 s, backing off to 5 min where systemd supports
 // RestartSteps (255+); older systemd ignores those two lines and keeps 10 s.
-func ngrokUnit(user, exe, publicURL string) string {
+func ngrokUnit(user, exe, publicURL string, hasURLFlag bool) string {
+	addr := "--url=" + publicURL
+	if !hasURLFlag {
+		addr = "--domain=" + strings.TrimPrefix(publicURL, "https://") // ngrok v3 before --url existed
+	}
 	return `[Unit]
 Description=ngrok tunnel for the Server Pulse agent (set up by server-pulse-agent install)
 After=network.target server-pulse-agent.service
@@ -235,7 +240,7 @@ StartLimitIntervalSec=0
 
 [Service]
 User=` + user + `
-ExecStart=` + exe + ` http 19998 --url=` + publicURL + ` --log=stdout
+ExecStart=` + exe + ` http 19998 ` + addr + ` --log=stdout
 Restart=always
 RestartSec=10
 RestartSteps=10
@@ -266,28 +271,79 @@ func setupNgrokService(pid int, publicURL string) string {
 	}
 	exe, _ := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
 	exe = strings.TrimSuffix(exe, " (deleted)")
-	u, err := user.LookupId(procUID(fmt.Sprintf("/proc/%d", pid)))
+	if strings.HasPrefix(exe, "/snap/") {
+		exe = "/snap/bin/ngrok" // the revision path disappears after snap refreshes; this one stays
+	}
+	uid := procUID(fmt.Sprintf("/proc/%d", pid))
+	u, err := user.LookupId(uid)
 	// everything that goes into the unit is checked: it runs at every boot
 	if err != nil || !safeUser.MatchString(u.Username) || !safeExe.MatchString(exe) || !safeHost.MatchString(publicURL) {
 		return ""
 	}
-	if os.WriteFile(ngrokUnitPath, []byte(ngrokUnit(u.Username, exe, publicURL)), 0o644) != nil {
+	// a root service must not run a file someone else can replace (that would be root at every boot)
+	if uid == "0" && !rootOwnedPath(exe) {
+		return "Not setting up ngrok to start by itself: " + exe + " can be changed by other users. Move ngrok to /usr/local/bin to get that"
+	}
+	if os.WriteFile(ngrokUnitPath, []byte(ngrokUnit(u.Username, exe, publicURL, ngrokHasURLFlag(exe))), 0o644) != nil {
 		return ""
 	}
 	run("systemctl", "daemon-reload")
 	if run("systemctl", "enable", ngrokUnitName) != nil {
 		return ""
 	}
-	return "ngrok will also start by itself after a restart or power cut (" + ngrokUnitName + ".service)"
+	return "ngrok will also start by itself after a restart or power cut (" + ngrokUnitName + ".service; it uses your ngrok account settings, not other options you started ngrok with)"
+}
+
+// rootOwnedPath: the file and every directory above it belong to root and only root can write them.
+func rootOwnedPath(p string) bool {
+	for cur := p; ; cur = filepath.Dir(cur) {
+		fi, err := os.Stat(cur)
+		if err != nil {
+			return false
+		}
+		st, ok := fi.Sys().(*syscall.Stat_t)
+		if !ok || st.Uid != 0 || fi.Mode().Perm()&0o022 != 0 {
+			return false
+		}
+		if cur == "/" {
+			return true
+		}
+	}
+}
+
+// ngrokHasURLFlag: newer ngrok takes --url; older v3 releases only know --domain.
+func ngrokHasURLFlag(exe string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	out, _ := exec.CommandContext(ctx, exe, "http", "--help").CombinedOutput()
+	return strings.Contains(string(out), "--url")
 }
 
 // startNgrokServiceIfIdle: re-installing while the hand-started ngrok is gone (e.g. after a power cut
 // on an older setup) starts the service, so the tunnel is back without typing anything.
-func startNgrokServiceIfIdle() bool {
+func startNgrokServiceIfIdle(want string) bool {
 	if _, err := os.Stat(ngrokUnitPath); err != nil {
 		return false
 	}
-	return run("systemctl", "start", ngrokUnitName) == nil
+	if run("systemctl", "start", ngrokUnitName) != nil {
+		return false
+	}
+	for i := 0; i < 10; i++ { // up to 10 s for ngrok to connect and report its address
+		time.Sleep(time.Second)
+		if u, _ := detectNgrok(); u == want {
+			return true
+		}
+	}
+	return false
+}
+
+// ngrokUnitServes: the auto-start unit exists and publishes this address.
+func ngrokUnitServes(publicURL string) bool {
+	b, err := os.ReadFile(ngrokUnitPath)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(b), "--url="+publicURL+" ") || strings.Contains(string(b), "--domain="+strings.TrimPrefix(publicURL, "https://")+" ")
 }
 
 func removeNgrokService() {

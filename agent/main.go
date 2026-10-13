@@ -409,7 +409,7 @@ func cmdInstall(args []string) error {
 			if msg := setupNgrokService(pid, u); msg != "" {
 				step(msg)
 			}
-		} else if strings.Contains(cfg.PublicURL, ".ngrok") && startNgrokServiceIfIdle() {
+		} else if strings.Contains(cfg.PublicURL, ".ngrok") && startNgrokServiceIfIdle(cfg.PublicURL) {
 			step("Started ngrok again (" + ngrokUnitName + ".service)")
 			cfg.Tunnel = false
 		} else if u, note, port := systemTailscale(); u != "" {
@@ -427,6 +427,11 @@ func cmdInstall(args []string) error {
 				}
 			}
 		}
+	}
+	// the ngrok auto-start belongs to the address in use: switching to Tailscale, --no-tunnel or another
+	// address removes it, or the next boot would publish the agent at the old address again
+	if cfg.PublicURL == "" || !ngrokUnitServes(cfg.PublicURL) {
+		removeNgrokService()
 	}
 	// whatever this install chose (--public-url, --no-tunnel, ngrok, another Funnel port), the agent
 	// must not stay published at an address it no longer uses
