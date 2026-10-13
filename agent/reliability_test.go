@@ -103,12 +103,18 @@ func TestNgrokProbeNeverRunsAsRootForAUsersFile(t *testing.T) {
 	os.Chmod(dir, 0o777)
 	out := filepath.Join(dir, "who")
 	script := filepath.Join(dir, "ngrok")
-	os.WriteFile(script, []byte("#!/bin/sh\nid -u > "+out+"\necho '--url'\n"), 0o755)
+	// uid, every group, then its session id and its own pid (equal: it leads a session of its own, no terminal)
+	os.WriteFile(script, []byte("#!/bin/sh\nread -r _ _ _ _ _ sid _ < /proc/$$/stat\necho $(id -u) $(id -G) $sid $$ > "+out+"\necho '--url'\n"), 0o755)
 	nobody := &user.User{Uid: "65534", Gid: "65534", HomeDir: "/"}
 	if !ngrokHasURLFlag(script, nobody) {
 		t.Fatal("probe output not read")
 	}
-	if b, _ := os.ReadFile(out); strings.TrimSpace(string(b)) != "65534" {
-		t.Fatalf("the probe ran as uid %q, want the file owner's uid (never root)", strings.TrimSpace(string(b)))
+	b, _ := os.ReadFile(out)
+	f := strings.Fields(string(b)) // uid, groups..., sid, pid
+	if len(f) != 4 || f[0] != "65534" || f[1] != "65534" {
+		t.Fatalf("the probe ran as %q, want only the file owner's uid and group (never root's)", b)
+	}
+	if f[2] != f[3] {
+		t.Fatalf("the probe shares the installer's session (%q): it could reach the root terminal", b)
 	}
 }

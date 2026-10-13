@@ -325,7 +325,9 @@ func ngrokHasURLFlag(exe string, owner *user.User) bool {
 		if err1 != nil || err2 != nil {
 			return true // can't drop privileges: don't run it, assume the current flag
 		}
-		cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid), NoSetGroups: true}}
+		// no supplementary groups (root's would be kept otherwise) and its own session: without a controlling
+		// terminal it can't push keystrokes into the root shell that runs the installer (TIOCSTI)
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Credential: &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid), Groups: []uint32{}}}
 	}
 	out, _ := cmd.CombinedOutput()
 	return strings.Contains(string(out), "--url")
