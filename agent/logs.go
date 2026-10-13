@@ -335,10 +335,13 @@ type repeat struct {
 // quieter applies a viewer's "hide this service" list and the repeat hold to a stream of lines.
 // One per viewer / request; memory is bounded (at most 5,000 distinct lines tracked).
 type quieter struct {
-	exclude map[string]bool
-	quiet   bool
-	seen    map[string]*repeat
+	exclude  map[string]bool
+	quiet    bool
+	seen     map[string]*repeat
+	prunedAt int64 // last sweep of stale entries (at most once a minute)
 }
+
+const maxTracked = 5000
 
 func newQuieter(f logFilter) *quieter {
 	q := &quieter{exclude: map[string]bool{}, quiet: f.Quiet, seen: map[string]*repeat{}}
@@ -361,12 +364,17 @@ func (q *quieter) keep(e *LogEntry) bool {
 	k := eventKey(e.Unit, e.Msg) // digits ignored: "worker 123 exited" and "worker 456 exited" are one line
 	r := q.seen[k]
 	if r == nil {
-		if len(q.seen) >= 5000 {
+		if len(q.seen) >= maxTracked && t-q.prunedAt >= holdWithin {
+			// sweep at most once a minute: a flood of unique lines can't make every line an O(n) scan
+			q.prunedAt = t
 			for key, x := range q.seen {
 				if x.heldUntil <= t && (len(x.times) == 0 || x.times[len(x.times)-1] < t-holdWithin) {
 					delete(q.seen, key)
 				}
 			}
+		}
+		if len(q.seen) >= maxTracked {
+			return true // full: show the line without tracking it, so memory stays bounded whatever arrives
 		}
 		r = &repeat{}
 		q.seen[k] = r

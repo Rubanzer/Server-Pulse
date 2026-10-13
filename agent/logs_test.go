@@ -333,3 +333,16 @@ func TestRepeatHoldAndHiddenServices(t *testing.T) {
 		t.Fatal("accepted an invalid service name")
 	}
 }
+
+func TestRepeatHoldMemoryIsBounded(t *testing.T) {
+	q := newQuieter(logFilter{Quiet: true})
+	// a flood of unique, recent lines: tracking must stop at the cap, every line still shown
+	for i := 0; i < 3*maxTracked; i++ {
+		if !q.keep(&LogEntry{T: 1000_000, Unit: "flood", Msg: fmt.Sprintf("unique %c%c%c", 'a'+i%26, 'a'+(i/26)%26, 'a'+(i/676)%26)}) {
+			t.Fatal("an untracked line was hidden")
+		}
+	}
+	if len(q.seen) > maxTracked {
+		t.Fatalf("tracked %d lines, cap %d", len(q.seen), maxTracked)
+	}
+}
