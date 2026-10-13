@@ -2,20 +2,20 @@
 
 import { useSyncExternalStore } from "react";
 
-type Mode = "system" | "light" | "dark";
+type Mode = "system" | "light" | "dark" | "black";
 const KEY = "sp-theme";
-const ORDER: Mode[] = ["light", "dark", "system"];
-const LABEL: Record<Mode, string> = { system: "Auto (follow this device)", light: "Light", dark: "Dark" };
+const ORDER: Mode[] = ["light", "dark", "black", "system"];
+const LABEL: Record<Mode, string> = { system: "Auto (follow this device)", light: "Light", dark: "Dark", black: "Black (true black for OLED and TV screens)" };
 
 /** Runs in <head> before paint so the page never flashes the wrong theme. Keep in sync with apply(). */
-export const THEME_SCRIPT = `(()=>{try{var m=localStorage.getItem("${KEY}")||"system";var d=m==="dark"||(m==="system"&&matchMedia("(prefers-color-scheme: dark)").matches);document.documentElement.dataset.theme=d?"dark":"light";document.documentElement.dataset.mode=m}catch(e){}})()`;
+export const THEME_SCRIPT = `(()=>{try{var m=localStorage.getItem("${KEY}")||"system";var d=m==="dark"||(m==="system"&&matchMedia("(prefers-color-scheme: dark)").matches);document.documentElement.dataset.theme=m==="black"?"black":d?"dark":"light";document.documentElement.dataset.mode=m}catch(e){}})()`;
 
 const listeners = new Set<() => void>();
 
 function read(): Mode {
   try {
     const v = localStorage.getItem(KEY);
-    return v === "light" || v === "dark" ? v : "system";
+    return v === "light" || v === "dark" || v === "black" ? v : "system";
   } catch {
     return "system";
   }
@@ -23,7 +23,7 @@ function read(): Mode {
 
 function apply(m: Mode) {
   const dark = m === "dark" || (m === "system" && matchMedia("(prefers-color-scheme: dark)").matches);
-  document.documentElement.dataset.theme = dark ? "dark" : "light";
+  document.documentElement.dataset.theme = m === "black" ? "black" : dark ? "dark" : "light";
   document.documentElement.dataset.mode = m;
 }
 
@@ -43,13 +43,20 @@ function choose(m: Mode) {
   try {
     localStorage.setItem(KEY, m);
   } catch {}
+  let done = false;
   const go = () => {
+    if (done) return;
+    done = true;
     apply(m);
     listeners.forEach((l) => l());
   };
   const doc = document as Document & { startViewTransition?: (cb: () => void) => unknown };
-  if (doc.startViewTransition && !matchMedia("(prefers-reduced-motion: reduce)").matches) doc.startViewTransition(go);
-  else go();
+  if (doc.startViewTransition && !matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    doc.startViewTransition(go);
+    // the transition runs its update on the next rendered frame; if none comes (background tab, busy
+    // device), switch anyway so the theme never lags a click behind
+    setTimeout(go, 150);
+  } else go();
 }
 
 const ICON: Record<Mode, React.ReactNode> = {
@@ -60,6 +67,8 @@ const ICON: Record<Mode, React.ReactNode> = {
     </>
   ),
   dark: <path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z" />,
+  // a filled moon: the darkest option
+  black: <path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z" fill="currentColor" />,
   system: (
     <>
       <rect x="3" y="4" width="18" height="12" rx="2" />
@@ -68,7 +77,7 @@ const ICON: Record<Mode, React.ReactNode> = {
   ),
 };
 
-/** Light / Dark / Auto, all three visible: the current choice is always clear and one tap away. */
+/** Light / Dark / Black / Auto, all visible: the current choice is always clear and one tap away. */
 export function ThemeToggle() {
   const mode = useSyncExternalStore(subscribe, read, () => "system" as Mode);
   return (
