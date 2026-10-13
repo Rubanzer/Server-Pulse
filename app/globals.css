@@ -20,6 +20,11 @@
   --color-ok: #1d7a46;
   --color-warn: #9a5d00;
   --color-crit: #c2362b;
+  /* logo trace: deep gold on light backgrounds */
+  --gold-base: rgba(176, 128, 20, 0.35);
+  --gold-1: #b07d0f;
+  --gold-2: #e6b422;
+  --gold-3: #fff1b8;
 }
 
 :root[data-theme="dark"] {
@@ -35,6 +40,11 @@
   --color-ok: #5fcf8f;
   --color-warn: #f0b44c;
   --color-crit: #ff7b6e;
+  /* logo trace: brighter gold on dark backgrounds */
+  --gold-base: rgba(240, 199, 94, 0.28);
+  --gold-1: #c9971d;
+  --gold-2: #f0c75e;
+  --gold-3: #fff6d6;
   color-scheme: dark;
 }
 
@@ -117,4 +127,86 @@ body {
 ::view-transition-new(root) {
   animation-duration: 220ms;
   animation-timing-function: ease-out;
+}
+
+/* ---------- logo: a golden light tracing the edge ----------
+   The bright sweep is a conic gradient on an oversized square that ROTATES (transform: compositor only,
+   no repaint per frame, so it stays smooth at 60/120/144 Hz). The ring shows it through a 1.5 px gap
+   around the inner pill. Plain rgba/hex colors and a still gold outline as the base, so older browsers
+   and "reduce motion" get a calm gold border instead of nothing. */
+.logo-ring {
+  --trace-speed: 4.5s;
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  border-radius: 9999px;
+  padding: 1.5px;
+  background: var(--gold-base);
+  transition:
+    box-shadow 0.25s ease,
+    transform 0.15s ease;
+}
+.logo-ring::before {
+  content: "";
+  position: absolute;
+  z-index: -1;
+  left: 50%;
+  top: 50%;
+  width: 300%;
+  aspect-ratio: 1;
+  transform: translate(-50%, -50%);
+  background: conic-gradient(
+    from 0deg,
+    transparent 0deg 250deg,
+    var(--gold-1) 290deg,
+    var(--gold-2) 325deg,
+    var(--gold-3) 345deg,
+    var(--gold-2) 352deg,
+    transparent 360deg
+  );
+  animation: logo-trace var(--trace-speed) linear infinite;
+  will-change: transform;
+}
+.logo-ring > .logo-inner {
+  border-radius: inherit;
+  background: var(--color-surface);
+}
+@keyframes logo-trace {
+  from {
+    transform: translate(-50%, -50%) rotate(0turn);
+  }
+  to {
+    transform: translate(-50%, -50%) rotate(1turn);
+  }
+}
+/* interactive: faster trace, warm glow, the pulse line re-draws itself */
+.logo-ring:hover,
+.logo-ring:focus-visible {
+  --trace-speed: 1.6s;
+  box-shadow: 0 0 0 3px var(--gold-base), 0 0 18px var(--gold-base);
+}
+.logo-ring:active {
+  transform: scale(0.97);
+}
+.logo-ring:hover .logo-pulse,
+.logo-ring:focus-visible .logo-pulse {
+  stroke-dasharray: 60;
+  animation: logo-draw 0.9s ease-out;
+}
+@keyframes logo-draw {
+  from {
+    stroke-dashoffset: 60;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .logo-ring::before {
+    animation: none;
+    opacity: 0;
+  }
+  .logo-ring {
+    background: var(--gold-2);
+  }
 }
