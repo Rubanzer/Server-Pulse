@@ -5,6 +5,7 @@ import { DEFS, derive, isTempContext, METRICS, type Dims, type Metric } from "@/
 import { LIMITS, type ServerLink } from "@/lib/config";
 import { isPrivateAddress } from "@/lib/crypto";
 import { guardedGet } from "@/lib/guarded-get";
+import { invalidateLink } from "@/lib/settings";
 import { countRequest } from "@/lib/usage";
 
 // The ONLY module that talks to the server. Read-only GETs, server-side only.
@@ -70,6 +71,7 @@ async function get<T>(link: ServerLink, path: string, schema: z.ZodType<T>): Pro
   }
   if (guarded && status >= 300 && status < 400) throw new NetdataError(`${link.host} tried to redirect; use the final link directly`);
   if (status < 200 || status >= 300) {
+    if (status === 401) invalidateLink(link.sid); // the password changed: re-read the link next time
     // say what's actually answering, in plain words (the most common setup mistakes)
     const ngrokErr = header("ngrok-error-code");
     if (ngrokErr) throw new NetdataError(`${link.host}: the ngrok tunnel isn't serving the agent (${ngrokErr}). On the server, start ngrok pointing at 127.0.0.1:19998.`, status);

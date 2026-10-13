@@ -1,5 +1,6 @@
 import "server-only";
 import { neon } from "@neondatabase/serverless";
+import { sql, type SQL } from "drizzle-orm";
 import { drizzle, type NeonHttpDatabase } from "drizzle-orm/neon-http";
 import { databaseUrl } from "@/lib/config";
 import * as schema from "./schema";
@@ -38,3 +39,13 @@ export const affected = (r: unknown) => {
   const x = r as { rowCount?: number | null; affectedRows?: number };
   return x.rowCount ?? x.affectedRows ?? 0;
 };
+
+/**
+ * The number a reading's peak is judged by, per chart: what its card headlines (CPU total, RAM and disk
+ * used, 1-minute load, I/O and network summed, hottest sensor). Picks the hour's peak minute in rollups.
+ */
+export const peakRank = (chart: SQL, values: SQL) => sql`CASE ${chart}
+  WHEN 'ram' THEN (${values}->>'used')::float8
+  WHEN 'disk' THEN (${values}->>'used')::float8
+  WHEN 'load' THEN (${values}->>'load1')::float8
+  ELSE (SELECT sum(x.value::float8) FROM jsonb_each_text(${values}) x) END`;

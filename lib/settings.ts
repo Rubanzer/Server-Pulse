@@ -77,12 +77,12 @@ async function resolve(sid: string): Promise<LinkState> {
   }
 }
 
-// cached 10 min per server per instance (saving a link calls invalidateLink()). Reading it every 30 s
-// kept a serverless Postgres from ever sleeping while a Live tab was open.
+// cached 2 min per server per instance; saving a link calls invalidateLink(), and so does a password the
+// server rejects, so a changed or removed link stops being used quickly on every instance.
 const caches = new Map<string, ReturnType<typeof cached<LinkState>>>();
 export function getLink(sid: string): Promise<LinkState> {
   let c = caches.get(sid);
-  if (!c) caches.set(sid, (c = cached(() => resolve(sid), () => 600_000)));
+  if (!c) caches.set(sid, (c = cached(() => resolve(sid), () => 120_000)));
   return c();
 }
 export const invalidateLink = (sid: string) => caches.get(sid)?.reset();

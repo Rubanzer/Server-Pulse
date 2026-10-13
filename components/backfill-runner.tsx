@@ -44,12 +44,15 @@ export function BackfillRunner() {
     let recent = false;
     try {
       recent = Date.now() - Number(sessionStorage.getItem(CHECKED_KEY)) < CHECK_EVERY_MS;
-      sessionStorage.setItem(CHECKED_KEY, String(Date.now()));
     } catch {}
     if (!recent)
       fetch("/api/backfill")
-        .then((r) => (r.ok ? (r.json() as Promise<{ pending: boolean }>) : { pending: false }))
+        .then((r) => (r.ok ? (r.json() as Promise<{ pending: boolean }>) : Promise.reject(new Error(String(r.status)))))
         .then((d) => {
+          // remembered only after a real answer, so a check cut short by navigation runs again on the next page
+          try {
+            sessionStorage.setItem(CHECKED_KEY, String(Date.now()));
+          } catch {}
           if (d.pending) void run();
         })
         .catch(() => {});

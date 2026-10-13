@@ -122,4 +122,5 @@ export function headline(metric: Metric, v: Dims): number {
   }
 }
 
-export type Point = { t: number; v: Dims }; // t = unix seconds
+/** t = unix seconds; pk = the bucket's peak reading when the bucket averages many (long ranges) */
+export type Point = { t: number; v: Dims; pk?: Dims };

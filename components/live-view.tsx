@@ -1,18 +1,20 @@
 "use client";
 
 import Link from "next/link";
-import { memo, useEffect, useState } from "react";
+import { memo, useCallback, useEffect, useState } from "react";
 import { RingBuffer } from "@/lib/algo";
 import { DEFS, METRICS, type Dims, type Metric, type Point } from "@/lib/charts";
 import type { ServerInfo, Snapshot } from "@/lib/netdata";
+import { frameValues, type PulseFrame } from "@/lib/pulse";
 import type { Usage } from "@/lib/usage";
 import { AnimatedNumber } from "./animated-number";
 import { fmtNum, Legend } from "./chart-utils";
 import { LiveChart } from "./live-chart";
+import { useAgentStream } from "./use-agent-stream";
 import { usePoll } from "./use-poll";
 
 type Live =
-  | { mode: "live" | "demo"; intervalMs: number; tunnel: string | null; info: ServerInfo | null; snapshot: Snapshot; btopUrl?: string }
+  | { mode: "live" | "demo"; intervalMs: number; tunnel: string | null; info: ServerInfo | null; snapshot?: Snapshot; btopUrl?: string }
   | { mode: "offline"; intervalMs: number; tunnel: string; error: string; lastSeen: number | null }
   | { mode: "paused"; intervalMs: number; tunnel: string; usage: Usage }
   | { mode: "error"; intervalMs: number; error: string }
@@ -190,25 +192,45 @@ const KpiTile = memo(function KpiTile({ m, v, pts, info }: { m: Metric; v: Dims 
   );
 });
 
+/** O(1) push per metric into its ring buffer. */
+function pushSnapshot(s: Snapshot) {
+  for (const [m, v] of Object.entries(s.values) as [Metric, Dims][]) {
+    const b = buf(m);
+    if ((b.last()?.t ?? 0) < s.t) b.push({ t: s.t, v });
+  }
+}
+
 export function LiveView() {
   const [view, setView] = useState(windowed);
+  const [streamSnap, setStreamSnap] = useState<Snapshot | null>(null);
+  const [live, setLive] = useState(store.last?.mode === "live");
 
-  // each new snapshot → O(1) push per metric into its ring buffer, then one render
-  const { data, error } = usePoll<Live>("/api/live", 2000, {
+  // readings stream straight from the agent when it can (1 s, no dashboard request per reading)
+  const onFrame = useCallback((f: PulseFrame) => {
+    const s = { t: f.t, uptimeSec: f.up, values: frameValues(f) } as unknown as Snapshot;
+    pushSnapshot(s);
+    setStreamSnap(s);
+    setView(windowed());
+  }, []);
+  const streaming = useAgentStream(live, onFrame);
+
+  // while streaming, the dashboard is only asked for status and server info every 30 s (no upstream
+  // request); when the stream drops, the URL changes and normal polling resumes at once
+  const { data, error } = usePoll<Live>(streaming ? "/api/live?lite=1" : "/api/live", 2000, {
     initial: store.last,
     nextInterval: (d) => d.intervalMs,
     onData: (d) => {
-      store.last = d;
-      if (!("snapshot" in d)) return;
-      const s = d.snapshot;
-      for (const [m, v] of Object.entries(s.values) as [Metric, Dims][]) {
-        const b = buf(m);
-        if ((b.last()?.t ?? 0) < s.t) b.push({ t: s.t, v });
+      setLive(d.mode === "live");
+      if (!("snapshot" in d) || !d.snapshot) {
+        if (store.last && "snapshot" in store.last && d.mode === "live") store.last = { ...d, snapshot: store.last.snapshot };
+        return;
       }
+      store.last = d;
+      pushSnapshot(d.snapshot);
       setView(windowed());
     },
   });
-  const snap = data && "snapshot" in data ? data.snapshot : null;
+  const snap = (streaming && streamSnap) || (data && "snapshot" in data ? (data.snapshot ?? null) : null);
 
   // LIV-2: seed the last 5 minutes once per page load, so charts and sparklines start full
   const canSeed = data?.mode === "live" || data?.mode === "demo";

@@ -22,8 +22,9 @@ export async function GET(req: NextRequest) {
   const q = Query.safeParse(Object.fromEntries(req.nextUrl.searchParams));
   if (!q.success) return Response.json({ error: q.error.issues[0]?.message ?? "Bad query" }, { status: 400 });
   const { chart, from, to, points } = q.data;
-  // a window that ended over an hour ago only changes when a catch-up fills it: the browser may reuse it briefly
-  const headers = { "cache-control": to < Date.now() / 1000 - 3600 ? "private, max-age=120" : "no-store" };
+  // never HTTP-cached: the answer depends on who is logged in, and the browser cache is keyed by URL only
+  // (another account on the same browser would get it). The page keeps its own in-memory cache.
+  const headers = { "cache-control": "no-store" };
   try {
     return Response.json(chart ? await history(s.sid, chart, from, to, points) : { charts: await historyMany(s.sid, METRICS, from, to, points) }, { headers });
   } catch (e) {

@@ -179,6 +179,16 @@ function useServerFrames() {
 // ---------- page ----------
 
 export function ServerView() {
+  // the server's name, same as on Live (status-only request: nothing is read from the server again)
+  const [hostname, setHostname] = useState<string | null>(null);
+  useEffect(() => {
+    const ctrl = new AbortController();
+    fetch("/api/live?lite=1", { signal: ctrl.signal })
+      .then((r) => r.json())
+      .then((d) => d?.info?.hostname && setHostname(d.info.hostname))
+      .catch(() => {});
+    return () => ctrl.abort();
+  }, []);
   const { frame, conn, note, lastAt, hist } = useServerFrames();
   const [now, setNow] = useState(() => Date.now());
   useEffect(() => {
@@ -226,8 +236,9 @@ export function ServerView() {
     <div className={`space-y-4 transition-opacity duration-300 ${stale ? "opacity-60" : ""}`}>
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div className="min-w-0">
-          <h1 className="truncate text-2xl font-semibold tracking-tight">{f.cpu.model ?? "Your server"}</h1>
+          <h1 className="truncate text-2xl font-semibold tracking-tight">{hostname ?? f.cpu.model ?? "Your server"}</h1>
           <p className="text-sm text-muted">
+            {hostname && f.cpu.model ? `${f.cpu.model} · ` : ""}
             {f.cpu.physical ? `${f.cpu.physical} cores · ${threads} threads` : `${threads} CPUs`} · up {uptime(f.up)} · load {f.load[0].toFixed(2)}{" "}
             <span title="1-minute load divided by CPU count">({(f.load[0] / Math.max(1, threads)).toFixed(2)}× capacity)</span>
           </p>
