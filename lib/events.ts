@@ -83,14 +83,15 @@ async function saveAgentEvents(serverId: string, epoch: string, list: AgentEvent
       severity: (["critical", "error", "warning"].includes(e.sev) ? e.sev : "error") as Severity,
       kind: e.kind.slice(0, 40),
       source: (e.src || "").slice(0, 200),
-      message: e.msg.slice(0, 2000),
+      message: fullMessage(e),
     }));
     await db
       .insert(schema.events)
       .values(part)
       .onConflictDoUpdate({
         target: [schema.events.serverId, schema.events.key],
-        set: { count: sql`excluded.count`, lastAt: sql`excluded.last_at` },
+        // an incident gains lines and may change its headline while it happens
+        set: { count: sql`excluded.count`, lastAt: sql`excluded.last_at`, message: sql`excluded.message`, severity: sql`excluded.severity`, kind: sql`excluded.kind` },
       });
   }
 }
@@ -152,9 +153,12 @@ export async function countEvents(serverId: string, w: { since?: number; until?:
 /** Without a database: show the agent's own copy (newest first). */
 export function fromAgent(list: AgentEvent[]): FailureEvent[] {
   return list
-    .map((e) => ({ id: e.id, ts: e.t, last: e.last || e.t, count: e.n || 1, severity: e.sev as Severity, kind: e.kind, source: e.src, message: e.msg }))
+    .map((e) => ({ id: e.id, ts: e.t, last: e.last || e.t, count: e.n || 1, severity: e.sev as Severity, kind: e.kind, source: e.src, message: fullMessage(e) }))
     .sort((a, b) => b.id - a.id);
 }
+
+/** The headline, then the incident's other lines (shown when the failure is opened). */
+const fullMessage = (e: AgentEvent) => [e.msg, ...(e.more ?? [])].join("\n").slice(0, 2000);
 
 export async function pruneEvents() {
   if (!db) return;

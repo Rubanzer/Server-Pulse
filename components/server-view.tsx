@@ -1,6 +1,6 @@
 "use client";
 
-import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, memo, useEffect, useMemo, useRef, useState } from "react";
 import { RingBuffer } from "@/lib/algo";
 import type { Point } from "@/lib/charts";
 import { mergeFrame, type PulseFrame } from "@/lib/pulse";
@@ -281,7 +281,7 @@ export function ServerView() {
       </div>
 
       <DisksCard f={f} />
-      <Processes procs={f.procs} />
+      <Processes procs={f.procs} cores={threads} now={now} />
     </div>
   );
 }
@@ -543,46 +543,115 @@ const DisksCard = memo(function DisksCard({ f }: { f: PulseFrame }) {
 
 // ---------- processes ----------
 
-function Processes({ procs }: { procs: PulseFrame["procs"] }) {
+type ProcRow = NonNullable<PulseFrame["procs"]>["top"][number];
+const procKey = (p: ProcRow) => `${p.pid}:${p.born ?? 0}`;
+
+const STATE: Record<string, { label: string; cls: string }> = {
+  D: { label: "waiting on disk", cls: "text-warn" },
+  Z: { label: "defunct", cls: "text-crit" },
+  T: { label: "stopped", cls: "text-warn" },
+};
+
+function age(born: number | undefined, now: number) {
+  if (!born) return "";
+  const s = Math.max(0, Math.round(now / 1000 - born));
+  if (s < 90) return `${s} s`;
+  if (s < 5400) return `${Math.round(s / 60)} min`;
+  if (s < 2 * 86400) return `${Math.round(s / 3600)} h`;
+  return `${Math.round(s / 86400)} d`;
+}
+
+function CpuCell({ cpu, scale }: { cpu: number; scale: number }) {
+  return (
+    <td className="py-1.5 pr-3 text-right">
+      <span className="inline-flex items-center justify-end gap-2">
+        <span className="hidden h-1.5 w-16 overflow-hidden rounded-full bg-paper sm:inline-block" aria-hidden>
+          <span className="block h-full bg-signal" style={{ width: `${Math.min(100, cpu / scale)}%` }} />
+        </span>
+        {cpu >= 10 ? Math.round(cpu) : cpu.toFixed(1)}%
+      </span>
+    </td>
+  );
+}
+
+/** One process: what it runs, who runs it, since when, and anything unusual about its state. */
+function ProcCells({ p, now, indent }: { p: ProcRow; now: number; indent?: boolean }) {
+  const st = p.st ? STATE[p.st] : undefined;
+  return (
+    <>
+      <td className={`max-w-[20rem] py-1.5 pr-3 ${indent ? "pl-6" : ""}`}>
+        <span className="block truncate" title={p.cmd ?? p.file ?? p.name}>
+          {indent ? <span className="text-muted">{p.name}</span> : null}
+          {p.file ? <span className={indent ? "ml-1.5 font-medium" : "ml-1.5 text-muted"}>{p.file}</span> : null}
+          {st && <span className={`ml-1.5 text-xs ${st.cls}`}>{st.label}</span>}
+        </span>
+        {p.cmd && <span className="block truncate font-mono text-[11px] text-muted">{p.cmd}</span>}
+      </td>
+      <td className="py-1.5 pr-3 text-muted">{p.pid}</td>
+      <td className="max-w-[8rem] truncate py-1.5 pr-3 text-muted">{p.user}</td>
+      <CpuCell cpu={p.cpu} scale={1} />
+      <td className="py-1.5 pr-3 text-right">{size(p.mem)}</td>
+      <td className="hidden py-1.5 pr-3 text-right text-muted sm:table-cell">{p.thr}</td>
+      <td className="hidden py-1.5 text-right text-muted md:table-cell">{age(p.born, now)}</td>
+    </>
+  );
+}
+
+function Processes({ procs, cores, now }: { procs: PulseFrame["procs"]; cores: number; now: number }) {
   const [tab, setTab] = useState<"top" | "groups">("top");
   const [sort, setSort] = useState<"cpu" | "mem">("cpu");
   const [q, setQ] = useState("");
-  const [frozen, setFrozen] = useState<string[] | null>(null); // row order while the pointer is inside
+  const [open, setOpen] = useState<Set<string>>(() => new Set()); // expanded groups / processes, kept across refreshes
+  const [frozen, setFrozen] = useState<string[] | null>(null); // row order while the pointer or focus is inside
+  const toggle = (k: string) =>
+    setOpen((s) => {
+      const n = new Set(s);
+      if (n.has(k)) n.delete(k);
+      else n.add(k);
+      return n;
+    });
 
   const rows = useMemo(() => {
     if (!procs) return [];
+    const needle = q.trim().toLowerCase();
+    const hit = (p: ProcRow) =>
+      p.name.toLowerCase().includes(needle) || p.user.toLowerCase().includes(needle) || (p.file ?? "").toLowerCase().includes(needle) || String(p.pid) === needle;
     const list =
       tab === "top"
-        ? procs.top.map((p) => ({ key: String(p.pid), name: p.name, pid: p.pid, user: p.user, cpu: p.cpu, mem: p.mem, thr: p.thr, n: 1, cmd: p.cmd }))
-        : procs.groups.map((g) => ({ key: g.name, name: g.name, pid: 0, user: "", cpu: g.cpu, mem: g.mem, thr: 0, n: g.n, cmd: undefined }));
-    const needle = q.trim().toLowerCase();
-    const filtered = needle ? list.filter((r) => r.name.toLowerCase().includes(needle) || r.user.toLowerCase().includes(needle) || String(r.pid).includes(needle)) : list;
-    const sorted = [...filtered].sort((a, b) => b[sort] - a[sort]);
+        ? procs.top.filter((p) => !needle || hit(p)).map((p) => ({ key: procKey(p), cpu: p.cpu, mem: p.mem, proc: p, group: undefined }))
+        : procs.groups
+            .filter((g) => !needle || g.name.toLowerCase().includes(needle) || (g.ps ?? []).some(hit))
+            .map((g) => ({ key: `g:${g.name}`, cpu: g.cpu, mem: g.mem, proc: undefined, group: g }));
+    // the page re-sorts by memory too: the agent sends the biggest by memory as well as by CPU
+    const seen = new Set<string>();
+    const sorted = list.filter((r) => !seen.has(r.key) && seen.add(r.key)).sort((a, b) => b[sort] - a[sort]);
     if (!frozen) return sorted;
     const at = new Map(frozen.map((k, i) => [k, i]));
     return sorted.sort((a, b) => (at.get(a.key) ?? 1e9) - (at.get(b.key) ?? 1e9));
   }, [procs, tab, sort, q, frozen]);
 
   if (!procs) return null;
+  const anyCmd = procs.top.some((p) => p.cmd);
+  const groupScale = Math.max(1, cores); // a group can use every core: 157% of 8 cores is a short bar
   return (
     <section className="rounded-xl border border-line bg-surface p-4" aria-label="Processes">
       <header className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
           <h2 className="font-medium">Processes</h2>
           <p className="text-xs text-muted">
-            {procs.count.toLocaleString()} running · top {procs.top.length} by CPU · CPU% is of one core, like top
+            {procs.count.toLocaleString()} running · the busiest by CPU and by memory · CPU% is of one core, like top
             {procs.hidden ? " · this server hides other users' processes" : ""}
           </p>
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <div role="tablist" aria-label="View" className="flex rounded-lg border border-line p-0.5 text-xs">
+        <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
+          <div role="group" aria-label="View" className="flex rounded-lg border border-line p-0.5 text-xs">
             {(
               [
                 ["top", "Top"],
                 ["groups", "By program"],
               ] as const
             ).map(([k, l]) => (
-              <button key={k} role="tab" aria-selected={tab === k} onClick={() => setTab(k)} className={`rounded-md px-2.5 py-1 ${tab === k ? "bg-signal text-on-signal" : "text-muted hover:text-ink"}`}>
+              <button key={k} aria-pressed={tab === k} onClick={() => setTab(k)} className={`rounded-md px-2.5 py-1 ${tab === k ? "bg-signal text-on-signal" : "text-muted hover:text-ink"}`}>
                 {l}
               </button>
             ))}
@@ -598,9 +667,9 @@ function Processes({ procs }: { procs: PulseFrame["procs"] }) {
             type="search"
             value={q}
             onChange={(e) => setQ(e.target.value)}
-            placeholder="Search"
+            placeholder="Search name, script, user, PID"
             aria-label="Search processes"
-            className="w-36 rounded-lg border border-line bg-paper px-2.5 py-1 text-sm"
+            className="min-w-0 flex-1 rounded-lg border border-line bg-paper px-2.5 py-1 text-sm sm:w-52 sm:flex-none"
           />
         </div>
       </header>
@@ -608,50 +677,134 @@ function Processes({ procs }: { procs: PulseFrame["procs"] }) {
         className="-mx-4 overflow-x-auto px-4"
         onPointerEnter={() => setFrozen(rows.map((r) => r.key))}
         onPointerLeave={() => setFrozen(null)}
+        onFocus={() => setFrozen((f) => f ?? rows.map((r) => r.key))}
+        onBlur={(e) => !e.currentTarget.contains(e.relatedTarget) && setFrozen(null)}
       >
-        <table className="w-full min-w-[560px] text-sm tabular-nums">
+        <table className="w-full min-w-[600px] text-sm tabular-nums">
           <thead className="text-left text-xs text-muted">
             <tr className="border-b border-line">
-              <th className="py-2 pr-3 font-medium">{tab === "top" ? "Program" : "Program (count)"}</th>
-              {tab === "top" && <th className="py-2 pr-3 font-medium">PID</th>}
-              {tab === "top" && <th className="py-2 pr-3 font-medium">User</th>}
+              <th className="py-2 pr-3 font-medium">{tab === "top" ? "Program · script" : "Program (count)"}</th>
+              <th className="py-2 pr-3 font-medium">PID</th>
+              <th className="py-2 pr-3 font-medium">User</th>
               <th className="py-2 pr-3 text-right font-medium">CPU</th>
               <th className="py-2 pr-3 text-right font-medium">Memory</th>
-              {tab === "top" && <th className="hidden py-2 text-right font-medium sm:table-cell">Threads</th>}
+              <th className="hidden py-2 pr-3 text-right font-medium sm:table-cell">Threads</th>
+              <th className="hidden py-2 text-right font-medium md:table-cell">Running for</th>
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
-              <tr key={r.key} className="border-b border-line last:border-0">
-                <td className="max-w-[18rem] truncate py-1.5 pr-3 font-medium" title={r.cmd ?? r.name}>
-                  {r.name}
-                  {tab === "groups" && <span className="ml-1 text-xs font-normal text-muted">×{r.n}</span>}
-                </td>
-                {tab === "top" && <td className="py-1.5 pr-3 text-muted">{r.pid}</td>}
-                {tab === "top" && <td className="py-1.5 pr-3 text-muted">{r.user}</td>}
-                <td className="py-1.5 pr-3 text-right">
-                  <span className="inline-flex items-center justify-end gap-2">
-                    <span className="hidden h-1.5 w-16 overflow-hidden rounded-full bg-paper sm:inline-block" aria-hidden>
-                      <span className="block h-full bg-signal" style={{ width: `${Math.min(100, r.cpu)}%` }} />
-                    </span>
-                    {r.cpu >= 10 ? Math.round(r.cpu) : r.cpu.toFixed(1)}%
-                  </span>
-                </td>
-                <td className="py-1.5 pr-3 text-right">{size(r.mem)}</td>
-                {tab === "top" && <td className="hidden py-1.5 text-right text-muted sm:table-cell">{r.thr}</td>}
-              </tr>
-            ))}
+            {rows.map((r) => {
+              const expanded = open.has(r.key);
+              if (r.group) {
+                const g = r.group;
+                const members = g.ps ?? [];
+                return (
+                  <Fragment key={r.key}>
+                    <tr className="border-b border-line">
+                      <td className="py-1.5 pr-3 font-medium">
+                        <button
+                          onClick={() => toggle(r.key)}
+                          aria-expanded={expanded}
+                          className="inline-flex items-center gap-1.5 rounded text-left hover:text-signal focus-visible:outline-2 focus-visible:outline-signal"
+                        >
+                          <span aria-hidden className={`inline-block text-xs text-muted transition-transform ${expanded ? "rotate-90" : ""}`}>
+                            ▶
+                          </span>
+                          {g.name}
+                          <span className="text-xs font-normal text-muted">×{g.n}</span>
+                          <span className="sr-only">{expanded ? ", hide its processes" : ", show its processes"}</span>
+                        </button>
+                      </td>
+                      <td className="py-1.5 pr-3" />
+                      <td className="py-1.5 pr-3" />
+                      <CpuCell cpu={g.cpu} scale={groupScale} />
+                      <td className="py-1.5 pr-3 text-right">{size(g.mem)}</td>
+                      <td className="hidden sm:table-cell" />
+                      <td className="hidden md:table-cell" />
+                    </tr>
+                    {expanded &&
+                      members.map((p) => (
+                        <tr key={procKey(p)} className="border-b border-line/60 bg-paper/50">
+                          <ProcCells p={p} now={now} indent />
+                        </tr>
+                      ))}
+                    {expanded && g.n > members.length && (
+                      <tr className="border-b border-line/60 bg-paper/50">
+                        <td colSpan={7} className="py-1.5 pl-6 text-xs text-muted">
+                          and {g.n - members.length} more using less CPU
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
+                );
+              }
+              const p = r.proc!;
+              return (
+                <Fragment key={r.key}>
+                  <tr className="border-b border-line">
+                    <td className="max-w-[20rem] py-1.5 pr-3">
+                      <button
+                        onClick={() => toggle(r.key)}
+                        aria-expanded={expanded}
+                        className="flex max-w-full items-center gap-1.5 truncate rounded text-left hover:text-signal focus-visible:outline-2 focus-visible:outline-signal"
+                      >
+                        <span aria-hidden className={`inline-block text-xs text-muted transition-transform ${expanded ? "rotate-90" : ""}`}>
+                          ▶
+                        </span>
+                        <span className="font-medium">{p.name}</span>
+                        {p.file && <span className="truncate text-muted">{p.file}</span>}
+                        {p.st && STATE[p.st] && <span className={`text-xs ${STATE[p.st]!.cls}`}>{STATE[p.st]!.label}</span>}
+                      </button>
+                    </td>
+                    <td className="py-1.5 pr-3 text-muted">{p.pid}</td>
+                    <td className="max-w-[8rem] truncate py-1.5 pr-3 text-muted">{p.user}</td>
+                    <CpuCell cpu={p.cpu} scale={1} />
+                    <td className="py-1.5 pr-3 text-right">{size(p.mem)}</td>
+                    <td className="hidden py-1.5 pr-3 text-right text-muted sm:table-cell">{p.thr}</td>
+                    <td className="hidden py-1.5 text-right text-muted md:table-cell">{age(p.born, now)}</td>
+                  </tr>
+                  {expanded && (
+                    <tr className="border-b border-line/60 bg-paper/50">
+                      <td colSpan={7} className="px-6 py-2 text-xs">
+                        <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1">
+                          <dt className="text-muted">Runs</dt>
+                          <dd>{p.file ? `${p.name} ${p.file}` : p.name}</dd>
+                          {p.cmd && (
+                            <>
+                              <dt className="text-muted">Command</dt>
+                              <dd className="break-all font-mono">{p.cmd}</dd>
+                            </>
+                          )}
+                          <dt className="text-muted">Started</dt>
+                          <dd>{p.born ? `${new Date(p.born * 1000).toLocaleString()} (${age(p.born, now)} ago)` : "unknown"}</dd>
+                          <dt className="text-muted">State</dt>
+                          <dd>{p.st ? (STATE[p.st]?.label ?? (p.st === "R" ? "running" : "sleeping")) : "unknown"}</dd>
+                          <dt className="text-muted">Threads</dt>
+                          <dd>{p.thr}</dd>
+                        </dl>
+                      </td>
+                    </tr>
+                  )}
+                </Fragment>
+              );
+            })}
             {!rows.length && (
               <tr>
-                <td colSpan={6} className="py-6 text-center text-muted">
-                  No process matches “{q}”.
+                <td colSpan={7} className="py-6 text-center text-muted">
+                  {q ? `No process matches “${q}”.` : "No processes to show."}
                 </td>
               </tr>
             )}
           </tbody>
         </table>
       </div>
-      <p className="mt-2 text-xs text-muted">The list holds still while your pointer is over it. Command lines are hidden to keep secrets out of view.</p>
+      <p className="mt-2 text-xs text-muted">
+        {tab === "groups" ? "Open a program to see its processes. " : "Open a process for its details. "}
+        The list holds still while your pointer or keyboard is in it.{" "}
+        {anyCmd
+          ? "Command lines are shown with passwords and tokens removed."
+          : "For Python, Node and other interpreters the script name is shown; full command lines stay hidden to keep secrets out of view."}
+      </p>
     </section>
   );
 }

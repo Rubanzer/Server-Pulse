@@ -71,13 +71,15 @@ sudo tee /etc/systemd/system/btop-web.service > /dev/null <<EOF
 Description=btop live in browser (ttyd)
 After=network-online.target
 Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
 
 [Service]
 User=$USER
 Environment=TERM=xterm-256color
 ExecStart=/usr/local/bin/ttyd -p 7681 -i lo -t titleFixed=btop-live -t fontSize=14 -t disableLeaveAlert=true btop
 Restart=always
-RestartSec=3
+RestartSec=30
 
 [Install]
 WantedBy=multi-user.target
@@ -170,12 +172,14 @@ sudo tee /etc/systemd/system/ngrok-pulse.service > /dev/null <<EOF
 Description=ngrok tunnel for Server Pulse
 After=network-online.target caddy.service
 Wants=network-online.target
+StartLimitIntervalSec=600
+StartLimitBurst=5
 
 [Service]
 User=$USER
 ExecStart=$(command -v ngrok) http 8080 --url=https://${ngrokDomain} --log=stdout
 Restart=always
-RestartSec=5
+RestartSec=30
 
 [Install]
 WantedBy=multi-user.target

@@ -306,15 +306,37 @@ func followFrom(ctx context.Context, f logFilter, backlog int, cursor string, em
 
 // Event is a failure worth keeping: an error in the logs, a crash, or a sustained threshold breach.
 type Event struct {
-	ID     uint64 `json:"id"`
-	T      int64  `json:"t"` // unix seconds (first seen)
-	Last   int64  `json:"last"`
-	Count  int    `json:"n"`
-	Sev    string `json:"sev"`  // critical | error | warning
-	Kind   string `json:"kind"` // log | service | memory | disk | crash | cpu | temp
-	Source string `json:"src"`
-	Msg    string `json:"msg"`
-	saved  int64  // when this version was last written to disk
+	ID     uint64   `json:"id"`
+	T      int64    `json:"t"` // unix seconds (first seen)
+	Last   int64    `json:"last"`
+	Count  int      `json:"n"`
+	Sev    string   `json:"sev"`  // critical | error | warning
+	Kind   string   `json:"kind"` // log | service | memory | disk | crash | cpu | temp
+	Source string   `json:"src"`
+	Msg    string   `json:"msg"`
+	More   []string `json:"more,omitempty"` // the incident's other lines (same source, within seconds), up to 8
+	saved  int64    // when this version was last written to disk
+}
+
+// kindRank: which line of an incident is its headline ("nginx.service: Failed with result" beats the
+// raw error lines the program printed just before).
+func kindRank(kind string) int {
+	if kind == "log" {
+		return 0
+	}
+	return 1
+}
+
+func sevRank(sev string) int {
+	switch sev {
+	case "critical":
+		return 3
+	case "error":
+		return 2
+	case "warning":
+		return 1
+	}
+	return 0
 }
 
 type rule struct {
@@ -437,6 +459,9 @@ func (l *EventLog) reindex() {
 	l.byKey = map[string]int{}
 	for i, e := range l.events {
 		l.byKey[eventKey(e.Source, e.Msg)] = i
+		for _, m := range e.More {
+			l.byKey[eventKey(e.Source, m)] = i
+		}
 	}
 }
 
@@ -449,13 +474,40 @@ func (l *EventLog) Add(t int64, sev, kind, source, msg string) bool {
 	key := eventKey(source, msg)
 	if i, ok := l.byKey[key]; ok && i < len(l.events) && t-l.events[i].Last < 600 {
 		e := &l.events[i]
-		e.Count++
+		if key == eventKey(e.Source, e.Msg) {
+			e.Count++ // the headline repeating counts; its companion lines repeating with it don't
+		}
 		e.Last = t
 		if t-e.saved >= 60 { // a line repeating 1000×/s costs one write a minute, not 1000/s
 			e.saved = t
 			l.appendLine(*e)
 		}
 		return true
+	}
+	// one crash prints several lines at once: they are one failure, not five rows
+	if source != "" && source != "server-pulse" {
+		for i := len(l.events) - 1; i >= 0 && i >= len(l.events)-20; i-- {
+			e := &l.events[i]
+			// only lines from the incident's first seconds join it, and at most 8: a program printing a new
+			// error every second still gets separate failures
+			if e.Source != source || t-e.T > 3 || t < e.T-3 || len(e.More) >= 8 {
+				continue
+			}
+			if kindRank(kind) > kindRank(e.Kind) {
+				e.More = append([]string{e.Msg}, e.More...)
+				e.Msg, e.Kind = msg, kind
+			} else {
+				e.More = append(e.More, msg)
+			}
+			if sevRank(sev) > sevRank(e.Sev) {
+				e.Sev = sev
+			}
+			e.Last = t
+			l.byKey[key] = i
+			e.saved = t
+			l.appendLine(*e)
+			return true
+		}
 	}
 	if m := t / 60; m != l.minute {
 		l.minute, l.inMin = m, [2]int{}

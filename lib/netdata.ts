@@ -275,10 +275,12 @@ export async function agentLogs(link: ServerLink, q: { after?: string; prio?: nu
   return { entries: r.entries as LogLine[], cursor: r.cursor ?? q.after ?? "", error: r.error, more: r.more ?? false, range: r.range ?? false };
 }
 
-export type AgentEvent = { id: number; t: number; last: number; n: number; sev: string; kind: string; src: string; msg: string };
+export type AgentEvent = { id: number; t: number; last: number; n: number; sev: string; kind: string; src: string; msg: string; more?: string[] };
 const EventsSchema = z.looseObject({
   epoch: z.string(),
-  events: z.array(z.looseObject({ id: z.number(), t: z.number(), last: z.number(), n: z.number(), sev: z.string(), kind: z.string(), src: z.string(), msg: z.string() })),
+  events: z.array(
+    z.looseObject({ id: z.number(), t: z.number(), last: z.number(), n: z.number(), sev: z.string(), kind: z.string(), src: z.string(), msg: z.string(), more: z.array(z.string()).optional() }),
+  ),
 });
 
 /** Failures recorded by the agent; null for older agents without failure tracking. */

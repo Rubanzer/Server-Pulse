@@ -14,8 +14,9 @@ export type PulseFrame = {
   net: { name: string; in: number; out: number; rxT: number; txT: number }[];
   procs?: {
     count: number;
-    top: { pid: number; name: string; user: string; cpu: number; mem: number; thr: number; cmd?: string }[];
-    groups: { name: string; n: number; cpu: number; mem: number }[];
+    /** st: R running, S sleeping, D waiting on disk, Z defunct…; born: unix start time; file: the script an interpreter runs */
+    top: { pid: number; name: string; user: string; cpu: number; mem: number; thr: number; st?: string; born?: number; file?: string; cmd?: string }[];
+    groups: { name: string; n: number; cpu: number; mem: number; ps?: { pid: number; name: string; user: string; cpu: number; mem: number; thr: number; st?: string; born?: number; file?: string; cmd?: string }[] }[];
     hidden?: boolean;
   };
 };

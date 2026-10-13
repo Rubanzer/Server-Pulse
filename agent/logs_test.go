@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -128,7 +129,7 @@ func TestEventLogRepeatsFloodAndPersistence(t *testing.T) {
 	}
 	// flood guard: at most 60 new failures per minute
 	for i := 0; i < 100; i++ {
-		l.Add(5000, "error", "log", "spam", "unique message "+strings.Repeat("x", i))
+		l.Add(5000, "error", "log", fmt.Sprintf("spam-%d", i), "unique message "+strings.Repeat("x", i))
 	}
 	if n := len(l.Since(3, 0, 1000)); n != 60 {
 		t.Fatalf("flood guard kept %d", n)
@@ -267,5 +268,31 @@ func TestTokenScopes(t *testing.T) {
 	}
 	if r, _ := http.Get(srv.URL + "/history/api/v1/logs"); r.StatusCode != 401 {
 		t.Fatalf("logs without password → %d", r.StatusCode)
+	}
+}
+
+func TestOneCrashIsOneFailure(t *testing.T) {
+	l := OpenEventLog(t.TempDir())
+	crash := func(at int64) {
+		// what ngrok-pulse.service printed each time it died, then systemd's verdict
+		l.Add(at, "error", "log", "ngrok-pulse.service", "t=2026-10-13T16:35:38+0530 lvl=eror msg=\"session closing\" err=\"failed to start tunnel\"")
+		l.Add(at, "error", "log", "ngrok-pulse.service", "ERROR: failed to start tunnel: Only paid plans may create endpoints with custom subdomains.")
+		l.Add(at+1, "error", "service", "ngrok-pulse.service", "ngrok-pulse.service: Failed with result 'exit-code'.")
+	}
+	for i := int64(0); i < 50; i++ {
+		crash(1000 + i*5)
+	}
+	got := l.Recent(10)
+	if len(got) != 1 {
+		t.Fatalf("one crash loop should be one failure, got %d: %+v", len(got), got)
+	}
+	e := got[0]
+	if e.Kind != "service" || !strings.Contains(e.Msg, "Failed with result") || len(e.More) != 2 || e.Count != 50 {
+		t.Fatalf("headline/companions/count wrong: %+v", e)
+	}
+	// a different service failing at the same moment stays its own failure
+	l.Add(1300, "error", "service", "nginx.service", "nginx.service: Failed with result 'exit-code'.")
+	if n := len(l.Recent(10)); n != 2 {
+		t.Fatalf("want 2 failures, got %d", n)
 	}
 }
