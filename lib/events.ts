@@ -91,7 +91,14 @@ async function saveAgentEvents(serverId: string, epoch: string, list: AgentEvent
       .onConflictDoUpdate({
         target: [schema.events.serverId, schema.events.key],
         // an incident gains lines and may change its headline while it happens
-        set: { count: sql`excluded.count`, lastAt: sql`excluded.last_at`, message: sql`excluded.message`, severity: sql`excluded.severity`, kind: sql`excluded.kind` },
+        // greatest(): a slower concurrent pull that read the agent earlier can't lower a count
+        set: {
+          count: sql`greatest(${schema.events.count}, excluded.count)`,
+          lastAt: sql`greatest(${schema.events.lastAt}, excluded.last_at)`,
+          message: sql`excluded.message`,
+          severity: sql`excluded.severity`,
+          kind: sql`excluded.kind`,
+        },
       });
   }
 }
@@ -163,7 +170,9 @@ const fullMessage = (e: AgentEvent) => [e.msg, ...(e.more ?? [])].join("\n").sli
 export async function pruneEvents() {
   if (!db) return;
   await db.delete(schema.events).where(lt(schema.events.lastAt, new Date(Date.now() - RETENTION_DAYS * 86_400_000)));
+  // one pass with a window function (a correlated subquery per row was quadratic exactly at the cap)
   await db.execute(sql`
-    delete from events e
-    where e.id <= (select x.id from events x where x.server_id = e.server_id order by x.id desc offset ${MAX_PER_SERVER} limit 1)`);
+    delete from events where id in (
+      select id from (select id, row_number() over (partition by server_id order by id desc) as rn from events) t
+      where rn > ${MAX_PER_SERVER})`);
 }

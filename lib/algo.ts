@@ -104,21 +104,26 @@ export function stats(values: readonly number[]): Stats | null {
 export function cached<T>(fn: () => Promise<T>, ttlMs: () => number, now: () => number = Date.now) {
   let value: { v: T; at: number } | null = null;
   let inflight: Promise<T> | null = null;
+  let gen = 0; // bumped by reset(): an older lookup's result is returned to its callers but not cached
   const get = (): Promise<T> => {
     if (value && now() - value.at < ttlMs()) return Promise.resolve(value.v);
     if (inflight) return inflight;
-    inflight = fn()
+    const mine = gen;
+    const p = fn()
       .then((v) => {
-        value = { v, at: now() };
+        if (mine === gen) value = { v, at: now() };
         return v;
       })
       .finally(() => {
-        inflight = null;
+        if (inflight === p) inflight = null;
       });
-    return inflight;
+    inflight = p;
+    return p;
   };
   get.reset = () => {
     value = null;
+    inflight = null;
+    gen++;
   };
   return get;
 }

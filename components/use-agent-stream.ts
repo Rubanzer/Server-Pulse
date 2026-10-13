@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { mergeFrame, type PulseFrame } from "@/lib/pulse";
+import { PULSE_IDLE_MS, readIdle } from "./stream-utils";
 
 /**
  * Live frames straight from the agent (1 per second, one long gzip request) instead of a dashboard
@@ -34,6 +35,7 @@ export function useAgentStream(enabled: boolean, onFrame: (f: PulseFrame) => voi
 
     async function once() {
       const tk = await fetch("/api/pulse/token", { cache: "no-store" }).then((r) => r.json());
+      if (stopped) return; // unmounted while the token was on its way: don't open a stream nothing closes
       if (!tk.url) throw new Error("no stream");
       ctrl = new AbortController();
       const res = await fetch(tk.url, { headers: { authorization: `Bearer ${tk.token}`, "ngrok-skip-browser-warning": "1" }, cache: "no-store", signal: ctrl.signal });
@@ -42,7 +44,7 @@ export function useAgentStream(enabled: boolean, onFrame: (f: PulseFrame) => voi
       const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
       let buf = "";
       for (;;) {
-        const { value, done } = await reader.read();
+        const { value, done } = await readIdle(reader, PULSE_IDLE_MS, () => ctrl?.abort());
         if (done) return; // sessions end after 15 min: reconnect with a fresh token
         buf += value;
         let nl;
@@ -66,6 +68,7 @@ export function useAgentStream(enabled: boolean, onFrame: (f: PulseFrame) => voi
         try {
           await once();
           fails = 0;
+          await sleep(1000); // a session that ended: reconnect, but never in a tight loop
         } catch (e) {
           if (stopped) return;
           setStreaming(false);

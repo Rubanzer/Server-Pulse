@@ -3,6 +3,7 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"crypto/rand"
 	"encoding/json"
@@ -108,6 +109,7 @@ type tunnelState struct {
 	err     string
 	authURL string // Tailscale login link while waiting for the owner to approve this machine
 	file    string // status.json in the private state dir: the only status root commands trust
+	fileMu  sync.Mutex
 }
 
 func (t *tunnelState) setAuthURL(u string) {
@@ -125,11 +127,12 @@ func (t *tunnelState) set(state, domain, err string) {
 	}
 	t.mu.Unlock()
 	if t.file != "" {
+		// the tsnet log callback and the tunnel loop both set state: write one at a time, so a stale
+		// snapshot can't land last (it would drop the login link the installer is waiting to show)
+		t.fileMu.Lock()
+		defer t.fileMu.Unlock()
 		b, _ := json.Marshal(t.snapshot())
-		tmp := t.file + ".tmp"
-		if os.WriteFile(tmp, b, 0o600) == nil {
-			os.Rename(tmp, t.file)
-		}
+		writeAtomic(t.file, func(w *bufio.Writer) error { _, err := w.Write(b); return err })
 	}
 }
 
@@ -176,7 +179,11 @@ func cmdRun(args []string) error {
 	defer stop()
 
 	// failures: error-level journal lines and crashes, plus sustained threshold breaches
-	go watchJournal(ctx, events, filepath.Join(stateDir, "journal.cursor"))
+	watched := make(chan struct{})
+	go func() {
+		defer close(watched)
+		watchJournal(ctx, events, filepath.Join(stateDir, "journal.cursor"))
+	}()
 	var th thresholds
 
 	// sampler: once a second, on the second
@@ -243,6 +250,10 @@ func cmdRun(args []string) error {
 
 	<-ctx.Done()
 	log.Printf("shutting down: saving history")
+	select { // the failure watcher saves its journal position, so nothing is re-read next start
+	case <-watched:
+	case <-time.After(2 * time.Second):
+	}
 	if err := store.Save(historyFile); err != nil {
 		log.Printf("save history: %v", err)
 	}
@@ -292,11 +303,10 @@ func serveFunnel(ctx context.Context, s *tsnet.Server, h http.Handler, ts *tunne
 		ts.set("online", domain, "")
 		log.Printf("tunnel: online at https://%s", domain)
 		srv := &http.Server{Handler: h, ReadHeaderTimeout: 10 * time.Second, WriteTimeout: 60 * time.Second, IdleTimeout: 2 * time.Minute}
-		go func() {
-			<-ctx.Done()
-			srv.Close()
-		}()
-		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) && ctx.Err() == nil {
+		stop := context.AfterFunc(ctx, func() { srv.Close() })
+		err = srv.Serve(ln)
+		stop()
+		if err != nil && !errors.Is(err, http.ErrServerClosed) && ctx.Err() == nil {
 			ts.set("error", domain, err.Error())
 			log.Printf("tunnel: %v (restarting)", err)
 			time.Sleep(5 * time.Second)
@@ -305,13 +315,14 @@ func serveFunnel(ctx context.Context, s *tsnet.Server, h http.Handler, ts *tunne
 }
 
 var (
-	keyRejectedRe = regexp.MustCompile(`(?i)invalid key|not valid|expired|revoked|unauthorized`)
+	keyRejectedRe = regexp.MustCompile(`(?i)invalid key|auth ?key\b.*\b(expired|revoked|not valid|invalid)|api key \S+ not valid`)
+	transientErr  = regexp.MustCompile(`(?i)x509|certificate|clock|context deadline`)
 	secretInErr   = regexp.MustCompile(`(?i)(tskey-[\w-]+|api key \S+|auth ?key \S+)`)
 )
 
 // keyRejected: Tailscale refused the auth key (expired, revoked, already used, mistyped).
 func keyRejected(err error) bool {
-	return keyRejectedRe.MatchString(err.Error()) && !strings.Contains(err.Error(), "context deadline")
+	return keyRejectedRe.MatchString(err.Error()) && !transientErr.MatchString(err.Error())
 }
 
 func funnelHint(err error) string {
@@ -392,9 +403,15 @@ func cmdInstall(args []string) error {
 	}
 	// already running ngrok for this agent? use it, nothing to type (and no Tailscale)
 	if *publicURL == "" && !*noTunnel {
-		if u := detectNgrok(); u != "" {
+		if u, pid := detectNgrok(); u != "" {
 			step("Found your ngrok tunnel at " + u + ": using it (no Tailscale needed)")
 			cfg.PublicURL, cfg.Tunnel = u, false
+			if msg := setupNgrokService(pid, u); msg != "" {
+				step(msg)
+			}
+		} else if strings.Contains(cfg.PublicURL, ".ngrok") && startNgrokServiceIfIdle() {
+			step("Started ngrok again (" + ngrokUnitName + ".service)")
+			cfg.Tunnel = false
 		} else if u, note, port := systemTailscale(); u != "" {
 			// Tailscale already logged in on this machine: publish through it, no second login
 			step("Found Tailscale on this machine: publishing the agent with Funnel at " + u)
@@ -630,6 +647,7 @@ func cmdUninstall(args []string) error {
 	cfg, _ := loadConfig(configPath)
 	run("systemctl", "disable", "--now", "server-pulse-agent")
 	stopSystemFunnel(cfg.FunnelPort)
+	removeNgrokService()
 	os.Remove(unitPath)
 	run("systemctl", "daemon-reload")
 	if cfg.KeepAwake {

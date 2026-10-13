@@ -21,6 +21,15 @@ export async function setSetting(key: string, value: string) {
     .onConflictDoUpdate({ target: schema.settings.key, set: { value } });
 }
 
+/** Set a numeric setting only forward: concurrent writers can't move a watermark back. */
+export async function advanceSetting(key: string, value: number) {
+  if (!db) throw new Error("No database connected");
+  await db
+    .insert(schema.settings)
+    .values({ key, value: String(value) })
+    .onConflictDoUpdate({ target: schema.settings.key, set: { value: sql`greatest(coalesce(nullif(${schema.settings.value}, '')::bigint, 0), excluded.value::bigint)::text` } });
+}
+
 export async function deleteSetting(key: string) {
   if (!db) return;
   await db.delete(schema.settings).where(eq(schema.settings.key, key));
@@ -77,8 +86,8 @@ async function resolve(sid: string): Promise<LinkState> {
   }
 }
 
-// cached 2 min per server per instance; saving a link calls invalidateLink(), and so does a password the
-// server rejects, so a changed or removed link stops being used quickly on every instance.
+// cached 2 min per server per instance; saving a link calls invalidateLink() on this instance (others
+// pick it up within the 2 minutes), and a password the server rejects drops it at once wherever it's used.
 const caches = new Map<string, ReturnType<typeof cached<LinkState>>>();
 export function getLink(sid: string): Promise<LinkState> {
   let c = caches.get(sid);

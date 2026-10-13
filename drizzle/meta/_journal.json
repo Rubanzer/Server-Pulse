@@ -29,6 +29,13 @@
       "when": 1791888775649,
       "tag": "0003_hourly_peaks",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "7",
+      "when": 1791903411460,
+      "tag": "0004_rollup_index",
+      "breakpoints": true
     }
   ]
 }

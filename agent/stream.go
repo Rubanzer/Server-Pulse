@@ -226,6 +226,16 @@ func (h *Hub) failed(ip string, now int64) {
 	if len(h.fails) > 10000 { // bounded memory under a spray of addresses
 		h.fails = map[string][]int64{}
 	}
+	if len(h.blockTo) > 10000 {
+		for k, until := range h.blockTo {
+			if until <= now {
+				delete(h.blockTo, k)
+			}
+		}
+		if len(h.blockTo) > 10000 {
+			h.blockTo = map[string]int64{}
+		}
+	}
 }
 
 func (h *Hub) blocked(ip string, now int64) bool {
@@ -358,7 +368,15 @@ func (h *Hub) Snapshot(w http.ResponseWriter, _ *http.Request) {
 		return
 	}
 	// nobody is streaming: take two readings 0.5 s apart so rates are real
-	h.fmu.Lock()
+	if !h.fmu.TryLock() {
+		if last != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.Write(last)
+		} else {
+			http.Error(w, "busy, try again", http.StatusServiceUnavailable)
+		}
+		return
+	}
 	defer h.fmu.Unlock()
 	h.pulse.Frame(float64(time.Now().UnixNano())/1e9, 0, false, true, false, false)
 	time.Sleep(500 * time.Millisecond)
@@ -442,7 +460,14 @@ func (h *Hub) ServeLogs(w http.ResponseWriter, r *http.Request) {
 	if !send([]byte("\n")) { // headers and the gzip header go out now, not with the first matching line
 		return
 	}
+	hb := make(chan struct{})
+	// runs before the earlier deferred gz.Close: the heartbeat must never write after the handler returned
+	defer func() {
+		cancel()
+		<-hb
+	}()
 	go func() {
+		defer close(hb)
 		t := time.NewTicker(logHeartbeat)
 		defer t.Stop()
 		for {
