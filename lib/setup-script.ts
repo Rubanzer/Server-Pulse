@@ -240,7 +240,7 @@ MAIL_TO=${i.mailTo}
 EOF
 sudo chmod 600 /etc/btop-report.env
 
-sudo curl -fsSL -o /usr/local/bin/btop-report.py https://raw.githubusercontent.com/MonoEdge-in/Server-Pulse/Production/scripts/btop-report.py
+sudo curl -fsSL -o /usr/local/bin/btop-report.py https://raw.githubusercontent.com/Rubanzer/Server-Pulse/main/scripts/btop-report.py
 sudo chmod 755 /usr/local/bin/btop-report.py
 
 sudo tee /etc/systemd/system/btop-report.service > /dev/null <<'EOF'
