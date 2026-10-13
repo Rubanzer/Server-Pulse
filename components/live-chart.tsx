@@ -81,14 +81,24 @@ function LiveChartImpl({ points, series, windowSec, height, yMax, compact, class
   useLayoutEffect(() => {
     if (!geo) return;
     let raf = 0;
+    let lastPx = NaN;
     const still = reducedMotion();
+    const dpr = window.devicePixelRatio || 1;
     const frame = () => {
       const elapsed = Math.min((performance.now() - anchor.current.at) / 1000, 30);
       const shift = still ? 0 : elapsed * geo.pxPerSec;
-      yNow.current += (target - yNow.current) * (still ? 1 : 0.15);
-      const sy = geo.builtMax / yNow.current;
-      plot.current?.setAttribute("transform", `translate(${pad.l + w - shift},${pad.t + h * (1 - sy)}) scale(1,${sy})`);
-      ticks.current?.setAttribute("transform", `translate(${pad.l + w - shift},0)`);
+      const settled = Math.abs(target - yNow.current) < target * 1e-3;
+      yNow.current = settled ? target : yNow.current + (target - yNow.current) * (still ? 1 : 0.15);
+      // an SVG transform repaints the whole chart: write it only when the line has moved a whole device
+      // pixel (a few times a second, not 120×), so big and high-refresh screens stay smooth
+      const px = Math.round(shift * dpr);
+      if (px !== lastPx || !settled) {
+        lastPx = px;
+        const sy = geo.builtMax / yNow.current;
+        const x = pad.l + w - px / dpr;
+        plot.current?.setAttribute("transform", `translate(${x},${pad.t + h * (1 - sy)}) scale(1,${sy})`);
+        ticks.current?.setAttribute("transform", `translate(${x},0)`);
+      }
       raf = still ? 0 : requestAnimationFrame(frame);
     };
     frame();

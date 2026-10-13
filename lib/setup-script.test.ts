@@ -44,7 +44,8 @@ test("ngrok steps and link", () => {
 test("an invalid ngrok domain never reaches the script", () => {
   const s = fullScript({ ...base, tunnel: "ngrok", ngrokDomain: "$(touch /tmp/pwn).ngrok-free.app" });
   assert.ok(!s.includes("$(touch"));
-  assert.ok(s.includes("YOUR-DOMAIN.ngrok-free.app"));
+  // no address → no --url at all: ngrok then uses the account's own free address (a placeholder crash-looped)
+  assert.ok(s.includes("ngrok) http 8080 --log=stdout"));
 });
 
 test("tailscale login is left out of the unattended script", () => {

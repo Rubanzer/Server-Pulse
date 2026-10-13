@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
-import { memo, useCallback, useEffect, useMemo, useState } from "react";
+import { memo, startTransition, useCallback, useEffect, useMemo, useState } from "react";
 import { Lru, stats, type Gap } from "@/lib/algo";
 import { DEFS, METRICS, type Metric, type Point } from "@/lib/charts";
 import { fmtNum, Legend, SeriesChart } from "./series-chart";
@@ -76,7 +76,8 @@ export function HistoryView({ owner = false }: { owner?: boolean }) {
   });
   useEffect(() => {
     const ctrl = new AbortController();
-    const show = (all: All) => !ctrl.signal.aborted && setShown({ key, all });
+    // seven charts of ~500 points: a transition lets React build them without freezing input
+    const show = (all: All) => !ctrl.signal.aborted && startTransition(() => setShown({ key, all }));
     const hit = cache.get(key);
     if (hit) {
       queueMicrotask(() => show(hit));
