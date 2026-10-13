@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -68,9 +69,61 @@ func TestScrubArgs(t *testing.T) {
 func TestParsePidStat(t *testing.T) {
 	// comm with spaces and parentheses; utime=11th field after ")" etc.
 	b := []byte("4242 (Web Content (x)) S 1 4242 4242 0 -1 4194560 100 0 0 0 150 50 0 0 20 0 7 0 12345 1000000 2500 18446744073709551615")
-	name, ticks, thr, ok := parsePidStat(b)
-	if !ok || name != "Web Content (x)" || ticks != 200 || thr != 7 {
-		t.Fatalf("got %q %d %d %v", name, ticks, thr, ok)
+	ps, ok := parsePidStat(b)
+	if !ok || ps.name != "Web Content (x)" || ps.ticks != 200 || ps.threads != 7 || ps.state != "S" || ps.start != 12345 {
+		t.Fatalf("got %+v %v", ps, ok)
+	}
+}
+
+func TestScriptOfShowsOnlyTheFile(t *testing.T) {
+	argv := func(a ...string) []byte { return []byte(strings.Join(a, "\x00") + "\x00") }
+	cases := []struct {
+		comm string
+		cmd  []byte
+		want string
+	}{
+		{"python3", argv("/home/u/myenv/bin/python", "/srv/app/worker.py", "--token", "ghp_secret"), "worker.py"},
+		{"python", argv("python", "-m", "uvicorn", "main:app", "--port", "8000"), "-m uvicorn"},
+		{"python3", argv("python3", "-c", "import os; print(os.environ)"), "(inline)"},
+		{"python3", argv("python3", "-W", "ignore", "x.py"), "x.py"},
+		{"python3", argv("python3", "--token=abc", "x.py"), "x.py"},
+		{"python3", argv("python3", "a=b/c.py"), ""},
+		{"python3", argv("python3", "/tmp/aB3dE5fG7hJ9kL1mN3pQ5.py"), ""},
+		{"python3", argv("python3", "process_customer_orders.py"), "process_customer_orders.py"},
+		{"node", argv("node", "dist/server.js"), "server.js"},
+		{"java", argv("java", "-Xmx2g", "-jar", "/opt/app/billing.jar", "--password=x"), "billing.jar"},
+		{"bash", argv("bash", "./backup.sh", "s3://bucket"), "backup.sh"},
+		{"nginx", argv("nginx: worker process"), ""},
+		{"python3", nil, ""},
+	}
+	for _, c := range cases {
+		if got := scriptOf(c.comm, c.cmd); got != c.want {
+			t.Errorf("%s %q → %q, want %q", c.comm, c.cmd, got, c.want)
+		}
+	}
+	if groupName("python3.11") != "python" || groupName("python3") != "python" || groupName("node") != "node" {
+		t.Fatal("interpreter versions should share a group")
+	}
+}
+
+func TestNgrokAddrAndKeyRedaction(t *testing.T) {
+	for addr, want := range map[string]bool{
+		"http://localhost:19998": true, "localhost:19998": true, "127.0.0.1:19998": true, "19998": true,
+		"http://[::1]:19998": true, "http://localhost:8080": false, "http://10.0.0.5:19998": false, "": false,
+	} {
+		if forwardsToAgent(addr) != want {
+			t.Errorf("forwardsToAgent(%q) != %v", addr, want)
+		}
+	}
+	err := errors.New("tsnet.Up: backend: invalid key: API key kH3dWCpXg221CNTRL-Ge8N not valid")
+	if !keyRejected(err) || strings.Contains(funnelHint(err), "kH3d") {
+		t.Fatalf("a refused key must be final and never quoted: %q", funnelHint(err))
+	}
+	if keyRejected(errors.New("context deadline exceeded")) {
+		t.Fatal("a timeout is not a refused key")
+	}
+	if strings.Contains(funnelHint(errors.New("dial: tskey-auth-abc123 failed")), "tskey-auth-abc123") {
+		t.Fatal("keys inside other errors must be redacted")
 	}
 }
 

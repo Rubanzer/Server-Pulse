@@ -92,6 +92,14 @@ The agent speaks the same API as Netdata (`/api/v1/info`, `allmetrics`, `data`, 
 
 History: 1-second detail for the last hour and 1-minute averages for 30 days, about 9 MB in memory. The 30-day tier is saved to `/var/lib/private/server-pulse/history.gob` every 5 minutes and on shutdown, so reboots keep it.
 
+## Using ngrok
+
+If ngrok already forwards to this agent (`ngrok http 19998`), `install` finds the tunnel by itself and uses it: no Tailscale, nothing to type. You can also name it: `install … --public-url https://your-name.ngrok-free.dev`.
+
+## Processes
+
+The Server page groups processes by program; open a group to see each process. For Python, Node and other interpreters it shows the script's file name (`worker.py`, `-m uvicorn`) and never other arguments. Full command lines (with passwords and tokens removed) only with `--show-args`.
+
 ## Logs and failures
 
 The agent reads the system journal (`journalctl`, read-only) for the dashboard's **Logs** page and watches it all the time for failures: out-of-memory kills, disk errors, crashes, failed services and any error-level line, plus CPU ≥ 95 % (5 min), memory ≥ 95 % (2 min), disk ≥ 90 % (1 min) and temperature ≥ 90 °C (1 min). Failures are kept in `/var/lib/private/server-pulse/events.jsonl` (repeats are counted, at most 60 new ones a minute) and copied by the dashboard into its database for 180 days.

@@ -101,7 +101,7 @@ Install options:
 
 type tunnelState struct {
 	mu      sync.Mutex
-	state   string // starting | login | online | error | off
+	state   string // starting | login | online | error | rejected (auth key refused: not retried) | off
 	domain  string
 	err     string
 	authURL string // Tailscale login link while waiting for the owner to approve this machine
@@ -268,6 +268,12 @@ func serveFunnel(ctx context.Context, s *tsnet.Server, h http.Handler, ts *tunne
 		}
 		if err != nil {
 			msg := funnelHint(err)
+			if keyRejected(err) {
+				// retrying can't fix a refused key; the installer clears it and starts a browser login instead
+				ts.set("rejected", "", msg)
+				log.Printf("tunnel: %s", msg)
+				return
+			}
 			ts.set("error", "", msg)
 			log.Printf("tunnel: %s (retrying in 30 s)", msg)
 			select {
@@ -296,8 +302,22 @@ func serveFunnel(ctx context.Context, s *tsnet.Server, h http.Handler, ts *tunne
 	}
 }
 
+var (
+	keyRejectedRe = regexp.MustCompile(`(?i)invalid key|not valid|expired|revoked|unauthorized`)
+	secretInErr   = regexp.MustCompile(`(?i)(tskey-[\w-]+|api key \S+|auth ?key \S+)`)
+)
+
+// keyRejected: Tailscale refused the auth key (expired, revoked, already used, mistyped).
+func keyRejected(err error) bool {
+	return keyRejectedRe.MatchString(err.Error()) && !strings.Contains(err.Error(), "context deadline")
+}
+
 func funnelHint(err error) string {
-	m := err.Error()
+	if keyRejected(err) {
+		// fixed text: the raw error quotes the key, and this message lands in status.json and the journal
+		return "Tailscale refused the saved auth key (expired, revoked or already used)"
+	}
+	m := secretInErr.ReplaceAllString(err.Error(), "•••")
 	switch {
 	case strings.Contains(m, "HTTPS") || strings.Contains(m, "https") || strings.Contains(m, "cert"):
 		return m + " | Fix: Tailscale admin console → DNS → Enable HTTPS"
@@ -363,7 +383,16 @@ func cmdInstall(args []string) error {
 		if !strings.HasPrefix(u, "https://") {
 			return errors.New("--public-url must be an https:// address")
 		}
-		cfg.PublicURL, *noTunnel = u, true
+		cfg.PublicURL, *noTunnel, cfg.Tunnel = u, true, false
+	}
+	// already running ngrok for this agent? use it, nothing to type (and no Tailscale)
+	if *publicURL == "" && !*noTunnel {
+		if u := detectNgrok(); u != "" {
+			step("Found your ngrok tunnel at " + u + ": using it (no Tailscale needed)")
+			cfg.PublicURL, cfg.Tunnel = u, false
+		} else if cfg.PublicURL != "" {
+			cfg.Tunnel = false // a tunnel saved by an earlier install
+		}
 	}
 	if *pair != "" && len(cfg.Origins) == 0 {
 		return errors.New("--pair needs --dashboard https://your-dashboard (the command from the dashboard includes both)")
@@ -386,6 +415,7 @@ func cmdInstall(args []string) error {
 		step("No Tailscale auth key given: you'll get a link to log in to Tailscale and approve this server")
 	}
 	warnLegacy()
+	quietLegacyServices()
 
 	step("Installing the binary")
 	self, err := os.Executable()
@@ -436,6 +466,20 @@ func cmdInstall(args []string) error {
 	case cfg.Tunnel:
 		step("Connecting to Tailscale and opening the public link")
 		st, err := waitOnline(15 * time.Minute)
+		if errors.Is(err, errKeyRejected) && cfg.AuthKey != "" {
+			fmt.Println("  ! Tailscale refused the saved auth key (expired, revoked or already used). Forgetting it;")
+			fmt.Println("    you'll get a link to log in instead. (Using ngrok? Run the command again with your ngrok address at the end.)")
+			cfg.AuthKey = ""
+			if b, err := json.MarshalIndent(cfg, "", "  "); err == nil {
+				os.WriteFile(configPath, b, 0o600)
+			}
+			os.Remove("/var/lib/private/server-pulse/status.json")
+			os.Remove("/var/lib/server-pulse/status.json")
+			if err := run("systemctl", "restart", "server-pulse-agent"); err != nil {
+				return err
+			}
+			st, err = waitOnline(15 * time.Minute)
+		}
 		if err != nil {
 			return fmt.Errorf("%v\n  The service keeps retrying in the background. Check with: server-pulse-agent status", err)
 		}
@@ -523,7 +567,7 @@ Wants=network-online.target
 [Service]
 ExecStart=/usr/local/bin/server-pulse-agent run
 Restart=always
-RestartSec=3
+RestartSec=10
 # least privilege: throwaway user, read-only system, config passed as a credential
 DynamicUser=yes
 # read-only access to the system journal for live logs and failure history
@@ -650,6 +694,8 @@ func tailscaleReminder(cfg Config, host string) {
 `, strings.SplitN(host, ".", 2)[0])
 }
 
+var errKeyRejected = errors.New("Tailscale refused the auth key")
+
 func waitOnline(limit time.Duration) (map[string]any, error) {
 	deadline := time.Now().Add(limit)
 	last, shownURL := "", ""
@@ -657,6 +703,9 @@ func waitOnline(limit time.Duration) (map[string]any, error) {
 		if st, err := trustedStatus(); err == nil {
 			if st["tunnel"] == "online" {
 				return st, nil
+			}
+			if st["tunnel"] == "rejected" {
+				return nil, errKeyRejected
 			}
 			if u, _ := st["authURL"].(string); u != "" && u != shownURL {
 				shownURL = u

@@ -74,8 +74,8 @@ type NIC struct {
 
 type Procs struct {
 	Count  int     `json:"count"`
-	Top    []Proc  `json:"top"`              // top 25 by CPU
-	Groups []Group `json:"groups"`           // top 15 names by CPU, summed over all processes
+	Top    []Proc  `json:"top"`              // top 25 by CPU, plus the 10 biggest by memory
+	Groups []Group `json:"groups"`           // top 15 programs by CPU plus the 5 biggest by memory, summed
 	Hidden bool    `json:"hidden,omitempty"` // /proc mounted with hidepid: only the agent's own processes are visible
 }
 
@@ -86,14 +86,23 @@ type Proc struct {
 	CPU     float64 `json:"cpu"` // % of one core, like top/btop
 	MemMiB  int64   `json:"mem"`
 	Threads int     `json:"thr"`
-	Cmd     string  `json:"cmd,omitempty"` // only when the owner opted in; always scrubbed
+	State   string  `json:"st,omitempty"`   // R running, S sleeping, D waiting on disk, Z defunct, …
+	Born    int64   `json:"born,omitempty"` // unix seconds the process started (with pid: a stable row key)
+	File    string  `json:"file,omitempty"` // the script an interpreter runs ("worker.py", "-m uvicorn"); never other arguments
+	Cmd     string  `json:"cmd,omitempty"`  // only when the owner opted in; always scrubbed
 }
 
 type Group struct {
-	Name   string  `json:"name"`
-	N      int     `json:"n"`
-	CPU    float64 `json:"cpu"`
-	MemMiB int64   `json:"mem"`
+	Name    string  `json:"name"`
+	N       int     `json:"n"`
+	CPU     float64 `json:"cpu"`
+	MemMiB  int64   `json:"mem"`
+	Members []Proc  `json:"ps,omitempty"` // its busiest 8 processes (n says how many there are)
+}
+
+type procKey struct {
+	pid   int
+	start uint64 // starttime ticks: a reused pid is a different process
 }
 
 // ---------- collector ----------
@@ -108,7 +117,9 @@ type Pulse struct {
 	prevCPU  [][]uint64
 	prevDisk map[string][2]uint64
 	prevNet  map[string][2]uint64
-	prevProc map[int]uint64 // pid → utime+stime ticks
+	prevProc map[procKey]uint64 // utime+stime ticks
+	argCache map[procKey]procArgs
+	btime    int64 // boot time, unix seconds
 	prevT    float64
 	prevPT   float64
 	users    map[uint32]string
@@ -122,7 +133,12 @@ type Pulse struct {
 
 func NewPulse(root string, showArgs bool) *Pulse {
 	p := &Pulse{root: root, showArgs: showArgs, prevDisk: map[string][2]uint64{}, prevNet: map[string][2]uint64{},
-		prevProc: map[int]uint64{}, users: map[uint32]string{}, clkTck: 100, pageMiB: float64(os.Getpagesize()) / (1 << 20)}
+		prevProc: map[procKey]uint64{}, argCache: map[procKey]procArgs{}, users: map[uint32]string{}, clkTck: 100, pageMiB: float64(os.Getpagesize()) / (1 << 20)}
+	for _, line := range strings.Split(string(readFile(p.path("proc/stat"))), "\n") {
+		if v, ok := strings.CutPrefix(line, "btime "); ok {
+			p.btime, _ = strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+		}
+	}
 	c := &Collector{root: root}
 	p.disks, p.ifaces = c.physical("sys/block"), c.physical("sys/class/net")
 	p.model = cpuModel(readFile(p.path("proc/cpuinfo")))
@@ -421,9 +437,11 @@ func (p *Pulse) processes(now float64) *Procs {
 		return nil
 	}
 	dt := now - p.prevPT
-	cur := make(map[int]uint64, len(p.prevProc))
+	cur := make(map[procKey]uint64, len(p.prevProc))
 	var all []Proc
+	keys := map[int]procKey{}
 	groups := map[string]*Group{}
+	byGroup := map[string][]int{} // group → indexes into all
 	buf := make([]byte, 0, 1024)
 	self := os.Getpid()
 	for _, e := range ents {
@@ -436,14 +454,15 @@ func (p *Pulse) processes(now float64) *Procs {
 		if !ok {
 			continue
 		}
-		name, ticks, threads, ok := parsePidStat(st)
+		ps, ok := parsePidStat(st)
 		if !ok {
 			continue
 		}
-		cur[pid] = ticks
+		key := procKey{pid, ps.start}
+		cur[key] = ps.ticks
 		cpu := 0.0
-		if prev, ok := p.prevProc[pid]; ok && dt > 0 {
-			cpu = float64(sub(ticks, prev)) / p.clkTck / dt * 100
+		if prev, ok := p.prevProc[key]; ok && dt > 0 {
+			cpu = float64(sub(ps.ticks, prev)) / p.clkTck / dt * 100
 		}
 		var rss int64
 		if sm, ok := readInto(filepath.Join(dir, "statm"), buf); ok {
@@ -461,28 +480,32 @@ func (p *Pulse) processes(now float64) *Procs {
 				}
 			}
 		}
-		pr := Proc{PID: pid, Name: name, User: user, CPU: round1(cpu), MemMiB: rss, Threads: threads}
-		if p.showArgs {
-			pr.Cmd = scrubArgs(readFile(filepath.Join(dir, "cmdline")))
+		pr := Proc{PID: pid, Name: ps.name, User: user, CPU: round1(cpu), MemMiB: rss, Threads: ps.threads, State: ps.state}
+		if p.btime > 0 {
+			pr.Born = p.btime + int64(float64(ps.start)/p.clkTck)
 		}
-		all = append(all, pr)
-		g := groups[name]
+		keys[pid] = key
+		gname := groupName(ps.name)
+		g := groups[gname]
 		if g == nil {
-			g = &Group{Name: name}
-			groups[name] = g
+			g = &Group{Name: gname}
+			groups[gname] = g
 		}
 		g.N++
 		g.CPU += cpu
 		g.MemMiB += rss
+		byGroup[gname] = append(byGroup[gname], len(all))
+		all = append(all, pr)
 	}
 	p.prevProc, p.prevPT = cur, now
 
-	sort.Slice(all, func(i, j int) bool {
-		if all[i].CPU != all[j].CPU {
-			return all[i].CPU > all[j].CPU
+	busier := func(a, b Proc) bool {
+		if a.CPU != b.CPU {
+			return a.CPU > b.CPU
 		}
-		return all[i].MemMiB > all[j].MemMiB
-	})
+		return a.MemMiB > b.MemMiB
+	}
+	// groups: top 15 by CPU plus the 5 biggest by memory, each with its busiest 8 processes
 	gl := make([]Group, 0, len(groups))
 	for _, g := range groups {
 		g.CPU = round1(g.CPU)
@@ -494,10 +517,119 @@ func (p *Pulse) processes(now float64) *Procs {
 		}
 		return gl[i].MemMiB > gl[j].MemMiB
 	})
-	out := &Procs{Count: len(all), Top: all[:min(25, len(all))], Groups: gl[:min(15, len(gl))]}
+	picked := gl[:min(15, len(gl))]
+	byMem := append([]Group(nil), gl[min(15, len(gl)):]...)
+	sort.Slice(byMem, func(i, j int) bool { return byMem[i].MemMiB > byMem[j].MemMiB })
+	picked = append(picked, byMem[:min(5, len(byMem))]...)
+	for i := range picked {
+		idx := byGroup[picked[i].Name]
+		sort.Slice(idx, func(a, b int) bool { return busier(all[idx[a]], all[idx[b]]) })
+		for _, k := range idx[:min(8, len(idx))] {
+			picked[i].Members = append(picked[i].Members, all[k])
+		}
+	}
+
+	// top: 25 by CPU plus the 10 biggest by memory (the page sorts by either)
+	sort.Slice(all, func(i, j int) bool { return busier(all[i], all[j]) })
+	top := append([]Proc(nil), all[:min(25, len(all))]...)
+	rest := append([]Proc(nil), all[min(25, len(all)):]...)
+	sort.Slice(rest, func(i, j int) bool { return rest[i].MemMiB > rest[j].MemMiB })
+	top = append(top, rest[:min(10, len(rest))]...)
+
+	// command lines are read only for the processes actually sent (≈ 200, not every process)
+	seen := map[procKey]procArgs{}
+	fill := func(pr *Proc) {
+		key := keys[pr.PID]
+		a, ok := p.argCache[key]
+		if !ok || a.name != pr.Name {
+			raw, _ := readInto(filepath.Join(p.path("proc/"+strconv.Itoa(pr.PID)), "cmdline"), make([]byte, 0, 4096))
+			a = procArgs{name: pr.Name, file: scriptOf(pr.Name, raw)}
+			if p.showArgs {
+				a.cmd = scrubArgs(raw)
+			}
+		}
+		seen[key] = a
+		pr.File, pr.Cmd = a.file, a.cmd
+	}
+	for i := range top {
+		fill(&top[i])
+	}
+	for i := range picked {
+		for j := range picked[i].Members {
+			fill(&picked[i].Members[j])
+		}
+	}
+	p.argCache = seen // only what is still on screen stays cached
+
+	out := &Procs{Count: len(all), Top: top, Groups: picked}
 	// with hidepid=1/2 we only see ourselves (and maybe a handful of others)
 	out.Hidden = len(all) <= 3 && len(all) > 0 && all[0].PID == self
 	return out
+}
+
+type procArgs struct{ name, file, cmd string }
+
+var interpVersion = regexp.MustCompile(`^(python|ruby|perl|php)[\d.]*$`)
+
+// groupName puts python, python3 and python3.11 (and the like) in one group.
+func groupName(comm string) string {
+	if m := interpVersion.FindStringSubmatch(comm); m != nil {
+		return m[1]
+	}
+	return comm
+}
+
+var (
+	interpreter = regexp.MustCompile(`^(python|node|nodejs|bun|deno|ruby|perl|php|java|bash|sh|dash|zsh)[\d.]*$`)
+	moduleName  = regexp.MustCompile(`^[A-Za-z_][\w.]{0,63}$`)
+	safeBase    = regexp.MustCompile(`^[\w.@+-]{1,64}$`)
+	scriptExt   = regexp.MustCompile(`\.(py|js|mjs|cjs|ts|rb|pl|php|jar|sh)$`)
+	randomStem  = regexp.MustCompile(`^[A-Za-z0-9]{20,}$`)
+)
+
+// scriptOf names the file an interpreter runs, from its command line, without exposing arguments:
+// only the first path-like argument's base name ("worker.py"), "-m module" for python, the jar for
+// java -jar, or "(inline)" for -c / -e code. Anything that could be a value (contains = or :, looks
+// like a random token, isn't a plain file name) gives "".
+func scriptOf(comm string, cmdline []byte) string {
+	if !interpreter.MatchString(comm) || len(cmdline) == 0 {
+		return ""
+	}
+	args := strings.Split(strings.TrimRight(string(cmdline), "\x00"), "\x00")
+	for i := 1; i < len(args) && i <= 8; i++ {
+		a := args[i]
+		switch {
+		case a == "-c" || a == "-e" || a == "-p" || a == "-r" || a == "--eval":
+			return "(inline)"
+		case a == "-m" && i+1 < len(args) && strings.HasPrefix(comm, "python"):
+			if moduleName.MatchString(args[i+1]) {
+				return "-m " + args[i+1]
+			}
+			return ""
+		case a == "-jar" && i+1 < len(args):
+			return safeName(args[i+1])
+		case strings.HasPrefix(a, "-"):
+			continue
+		case strings.ContainsAny(a, "=:"):
+			continue // a value, not a file
+		case strings.Contains(a, "/") || scriptExt.MatchString(a):
+			return safeName(a)
+		}
+	}
+	return ""
+}
+
+func safeName(path string) string {
+	base := filepath.Base(path)
+	stem := strings.TrimSuffix(base, filepath.Ext(base))
+	if !safeBase.MatchString(base) || strings.ContainsAny(path, "=:") {
+		return ""
+	}
+	// a long run of letters and digits with no separator is more likely a token than a file name
+	if randomStem.MatchString(stem) && strings.ContainsAny(stem, "0123456789") && strings.IndexFunc(stem, func(r rune) bool { return r >= 'a' && r <= 'z' }) >= 0 {
+		return ""
+	}
+	return base
 }
 
 func readInto(path string, buf []byte) ([]byte, bool) {
@@ -515,23 +647,30 @@ func readInto(path string, buf []byte) ([]byte, bool) {
 	return buf[:n], true
 }
 
-// parsePidStat reads comm, utime+stime and num_threads from /proc/[pid]/stat.
+type pidStat struct {
+	name, state string
+	ticks       uint64 // utime + stime
+	threads     int
+	start       uint64 // starttime, clock ticks after boot
+}
+
+// parsePidStat reads comm, state, utime+stime, num_threads and starttime from /proc/[pid]/stat.
 // comm is between the first "(" and the LAST ")" (names may contain spaces and parentheses).
-func parsePidStat(b []byte) (name string, ticks uint64, threads int, ok bool) {
+func parsePidStat(b []byte) (pidStat, bool) {
 	l, r := bytes.IndexByte(b, '('), bytes.LastIndexByte(b, ')')
 	if l < 0 || r <= l {
-		return
+		return pidStat{}, false
 	}
-	name = string(b[l+1 : r])
 	f := strings.Fields(string(b[r+1:]))
-	// after ")": state(0) ppid(1) … utime(11) stime(12) … num_threads(17)
-	if len(f) < 18 {
-		return
+	// after ")": state(0) ppid(1) … utime(11) stime(12) … num_threads(17) itrealvalue(18) starttime(19)
+	if len(f) < 20 {
+		return pidStat{}, false
 	}
 	ut, _ := strconv.ParseUint(f[11], 10, 64)
 	stt, _ := strconv.ParseUint(f[12], 10, 64)
-	threads, _ = strconv.Atoi(f[17])
-	return name, ut + stt, threads, true
+	threads, _ := strconv.Atoi(f[17])
+	start, _ := strconv.ParseUint(f[19], 10, 64)
+	return pidStat{name: string(b[l+1 : r]), state: f[0], ticks: ut + stt, threads: threads, start: start}, true
 }
 
 // ---------- argument scrubbing (opt-in only) ----------

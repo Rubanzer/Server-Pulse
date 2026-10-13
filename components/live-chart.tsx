@@ -23,7 +23,8 @@ const PAD = { l: 44, r: 8, t: 8, b: 20 };
 /**
  * Continuously scrolling live chart.
  *  - React renders only when data changes; every animation frame just updates one `transform`
- *    (compositor work, no layout), so it stays at 60 fps without re-rendering anything.
+ *    (compositor work, no layout), so it runs at the display's own rate (60, 120, 144 Hz…) without
+ *    re-rendering anything; motion is time-based, so it moves at the same speed on every screen.
  *  - Zero added latency: the newest reading is drawn the moment it arrives and the line holds
  *    its last value out to "now", so motion is continuous without buffering a sample.
  *  - Curves are monotone cubic (no overshoot); the y scale eases instead of jumping.

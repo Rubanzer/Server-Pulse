@@ -778,7 +778,15 @@ const FailureRow = memo(function FailureRow({ e, onShowLogs }: { e: Failure; onS
               </span>
             )}
           </span>
-          <span className={`mt-0.5 block font-mono text-xs text-ink/80 ${open ? "whitespace-pre-wrap break-words" : "truncate"}`}>{e.message}</span>
+          {/* one failure can carry several lines (the program's errors, then systemd's verdict): headline first */}
+          <span className={`mt-0.5 block font-mono text-xs text-ink/80 ${open ? "whitespace-pre-wrap break-words" : "truncate"}`}>
+            {open ? e.message : e.message.split("\n")[0]}
+          </span>
+          {!open && e.message.includes("\n") && (
+            <span className="mt-0.5 block text-xs text-muted">
+              +{e.message.split("\n").length - 1} more line{e.message.split("\n").length > 2 ? "s" : ""}
+            </span>
+          )}
           {open && e.count > 1 && (
             <span className="mt-1 block text-xs text-muted">
               Repeated {e.count} times, last at {new Date(e.last * 1000).toLocaleString()}.
