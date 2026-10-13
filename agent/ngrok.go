@@ -284,7 +284,7 @@ func setupNgrokService(pid int, publicURL string) string {
 	if uid == "0" && !rootOwnedPath(exe) {
 		return "Not setting up ngrok to start by itself: " + exe + " can be changed by other users. Move ngrok to /usr/local/bin to get that"
 	}
-	if os.WriteFile(ngrokUnitPath, []byte(ngrokUnit(u.Username, exe, publicURL, ngrokHasURLFlag(exe))), 0o644) != nil {
+	if os.WriteFile(ngrokUnitPath, []byte(ngrokUnit(u.Username, exe, publicURL, ngrokHasURLFlag(exe, u))), 0o644) != nil {
 		return ""
 	}
 	run("systemctl", "daemon-reload")
@@ -311,11 +311,23 @@ func rootOwnedPath(p string) bool {
 	}
 }
 
-// ngrokHasURLFlag: newer ngrok takes --url; older v3 releases only know --domain.
-func ngrokHasURLFlag(exe string) bool {
+// ngrokHasURLFlag: newer ngrok takes --url; older v3 releases only know --domain. The installer runs as
+// root, so the probe runs as ngrok's own user (a root ngrok was already checked to be root-owned): a
+// file a normal user can change is never executed with root's rights.
+func ngrokHasURLFlag(exe string, owner *user.User) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	out, _ := exec.CommandContext(ctx, exe, "http", "--help").CombinedOutput()
+	cmd := exec.CommandContext(ctx, exe, "http", "--help")
+	cmd.Env = []string{"HOME=" + owner.HomeDir, "PATH=/usr/local/bin:/usr/bin:/bin"}
+	if owner.Uid != "0" {
+		uid, err1 := strconv.ParseUint(owner.Uid, 10, 32)
+		gid, err2 := strconv.ParseUint(owner.Gid, 10, 32)
+		if err1 != nil || err2 != nil {
+			return true // can't drop privileges: don't run it, assume the current flag
+		}
+		cmd.SysProcAttr = &syscall.SysProcAttr{Credential: &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid), NoSetGroups: true}}
+	}
+	out, _ := cmd.CombinedOutput()
 	return strings.Contains(string(out), "--url")
 }
 

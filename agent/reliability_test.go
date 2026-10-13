@@ -5,6 +5,7 @@ import (
 	"encoding/gob"
 	"errors"
 	"os"
+	"os/user"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -86,5 +87,28 @@ func TestNgrokUnitFlagsAndUnsafePaths(t *testing.T) {
 		if safeHost.MatchString(bad) {
 			t.Fatalf("unsafe address accepted: %q", bad)
 		}
+	}
+}
+
+func TestNgrokProbeNeverRunsAsRootForAUsersFile(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("needs root (the installer runs as root)")
+	}
+	// t.TempDir's parent is private (0700): "nobody" couldn't even reach the file. Use an open folder.
+	dir, err := os.MkdirTemp("/tmp", "ngrok-probe-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(dir)
+	os.Chmod(dir, 0o777)
+	out := filepath.Join(dir, "who")
+	script := filepath.Join(dir, "ngrok")
+	os.WriteFile(script, []byte("#!/bin/sh\nid -u > "+out+"\necho '--url'\n"), 0o755)
+	nobody := &user.User{Uid: "65534", Gid: "65534", HomeDir: "/"}
+	if !ngrokHasURLFlag(script, nobody) {
+		t.Fatal("probe output not read")
+	}
+	if b, _ := os.ReadFile(out); strings.TrimSpace(string(b)) != "65534" {
+		t.Fatalf("the probe ran as uid %q, want the file owner's uid (never root)", strings.TrimSpace(string(b)))
 	}
 }
