@@ -163,7 +163,7 @@ function finish(
     points.push(p.pk ? { t: p.t, v: derive(metric, p.d), pk: derive(metric, p.pk) } : { t: p.t, v: derive(metric, p.d) });
   }
   while (gi < gaps.length) points.push({ t: Math.round((gaps[gi]!.from + gaps[gi++]!.to) / 2), v: blank });
-  points.sort((a, b) => a.t - b.t);
+  // already in time order: each gap marker (its midpoint) is pushed between the points around it, O(n)
 
   return { source: o.source, step: o.step, points, note: o.note, gaps, firstSample: o.first ?? raw[0]?.t ?? null, coverage: o.covered !== undefined && end > start ? Math.min(1, o.covered / (end - start)) : coverage(start, end, gaps) };
 }

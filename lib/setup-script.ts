@@ -177,7 +177,7 @@ StartLimitBurst=5
 
 [Service]
 User=$USER
-ExecStart=$(command -v ngrok) http 8080 --url=https://${ngrokDomain} --log=stdout
+ExecStart=$(command -v ngrok) http 8080${HOST.test(i.ngrokDomain) ? ` --url=https://${ngrokDomain}` : ""} --log=stdout
 Restart=always
 RestartSec=30
 

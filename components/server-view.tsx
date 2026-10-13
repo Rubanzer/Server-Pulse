@@ -33,10 +33,13 @@ function uptime(sec: number) {
 
 // ---------- color: sequential ramps, status color only past thresholds ----------
 
-const utilColor = (p: number) =>
-  p >= 95 ? "var(--color-crit)" : p >= 85 ? "var(--color-warn)" : `color-mix(in oklab, var(--color-signal) ${Math.round(8 + p * 0.82)}%, var(--color-surface))`;
-const tempColor = (t: number) =>
-  !t ? "var(--color-paper)" : t >= 85 ? "var(--color-crit)" : `color-mix(in oklab, var(--color-warn) ${Math.round(Math.max(0, Math.min(1, (t - 35) / 50)) * 85 + 5)}%, var(--color-surface))`;
+// A ramp is a solid color at an opacity over the card's surface, not color-mix(): that needs Chrome 111 /
+// Safari 16.2, and older engines (TV and kiosk browsers on big displays) drew those tiles and bars blank.
+type Tint = { c: string; a: number };
+const utilColor = (p: number): Tint =>
+  p >= 95 ? { c: "var(--color-crit)", a: 1 } : p >= 85 ? { c: "var(--color-warn)", a: 1 } : { c: "var(--color-signal)", a: (8 + p * 0.82) / 100 };
+const tempColor = (t: number): Tint =>
+  !t ? { c: "var(--color-paper)", a: 1 } : t >= 85 ? { c: "var(--color-crit)", a: 1 } : { c: "var(--color-warn)", a: (Math.max(0, Math.min(1, (t - 35) / 50)) * 85 + 5) / 100 };
 const level = (p: number, warn = 85, crit = 95) => (p >= crit ? "crit" : p >= warn ? "warn" : "ok");
 const LEVEL_TEXT = { ok: "", warn: "High", crit: "Critical" } as const;
 const LEVEL_CLASS = { ok: "text-muted", warn: "text-warn", crit: "text-crit" } as const;
@@ -190,12 +193,15 @@ export function ServerView() {
     return () => ctrl.abort();
   }, []);
   const { frame, conn, note, lastAt, hist } = useServerFrames();
-  const [now, setNow] = useState(() => Date.now());
+  // "stale" after 4 s without a frame: one timer reset per frame, instead of re-rendering the whole
+  // page every second to compare clocks
+  const [staleSince, setStaleSince] = useState(0);
   useEffect(() => {
-    const id = setInterval(() => !document.hidden && setNow(Date.now()), 1000);
-    return () => clearInterval(id);
-  }, []);
-  const stale = lastAt > 0 && now - lastAt > 4000;
+    if (!lastAt) return;
+    const t = setTimeout(() => setStaleSince(lastAt), 4000);
+    return () => clearTimeout(t);
+  }, [lastAt]);
+  const stale = lastAt > 0 && staleSince === lastAt;
 
   if (conn === "unsupported")
     return (
@@ -281,7 +287,7 @@ export function ServerView() {
       </div>
 
       <DisksCard f={f} />
-      <Processes procs={f.procs} cores={threads} now={now} />
+      <Processes procs={f.procs} cores={threads} now={f.t * 1000} />
     </div>
   );
 }
@@ -331,6 +337,7 @@ function Kpi({
   series?: string;
   yMax?: number;
 }) {
+  const chartSeries = useMemo(() => [{ key: series ?? "", label, unit }], [series, label, unit]);
   return (
     <article className="flex flex-col justify-between gap-2 rounded-xl border border-line bg-surface p-4">
       <header className="flex items-baseline justify-between">
@@ -343,7 +350,7 @@ function Kpi({
       </p>
       {sub && <p className="truncate text-xs text-muted">{sub}</p>}
       {spark && series && (
-        <LiveChart points={spark} series={[{ key: series, label, unit }]} windowSec={HISTORY} height={36} compact yMax={yMax} className={lv === "ok" ? "text-signal" : LEVEL_CLASS[lv]} />
+        <LiveChart points={spark} series={chartSeries} windowSec={HISTORY} height={36} compact yMax={yMax} className={lv === "ok" ? "text-signal" : LEVEL_CLASS[lv]} />
       )}
     </article>
   );
@@ -396,10 +403,11 @@ const CoreMap = memo(function CoreMap({ f }: { f: PulseFrame }) {
             <div
               key={i}
               title={`CPU ${i}: ${p}%${t ? ` · ${t}°C` : ""}${f.cpu.mhz?.[i] ? ` · ${f.cpu.mhz[i]} MHz` : ""}`}
-              className={`grid aspect-square place-items-center rounded-[4px] font-mono text-[10px] tabular-nums transition-colors duration-300 sm:text-[11px] ${strong ? "text-on-signal" : "text-ink/80"}`}
-              style={{ background: bg }}
+              className={`relative grid aspect-square place-items-center overflow-hidden rounded-[4px] font-mono text-[10px] tabular-nums sm:text-[11px] ${strong ? "text-on-signal" : "text-ink"}`}
             >
-              {mode === "util" ? v : v || "–"}
+              <span aria-hidden className="absolute inset-0" style={{ background: bg.c, opacity: bg.a }} />
+              {/* opacity, not text-ink/80: older engines' fallback for /80 is the light-theme color */}
+              <span className={`relative ${strong ? "" : "opacity-80"}`}>{mode === "util" ? v : v || "–"}</span>
             </div>
           );
         })}
@@ -423,11 +431,12 @@ const CoreMap = memo(function CoreMap({ f }: { f: PulseFrame }) {
   );
 });
 
-function Bar({ parts, label }: { parts: { pct: number; color: string; name: string }[]; label: string }) {
+function Bar({ parts, label }: { parts: { pct: number; color: string; name: string; alpha?: number }[]; label: string }) {
   return (
-    <div className="flex h-3 overflow-hidden rounded-full bg-paper" role="img" aria-label={label}>
+    // contain: the width animation re-lays out only this 12 px track, not the whole page grid
+    <div className="flex h-3 overflow-hidden rounded-full bg-paper [contain:layout_paint]" role="img" aria-label={label}>
       {parts.map((p) => (
-        <span key={p.name} title={`${p.name}: ${p.pct.toFixed(0)}%`} style={{ width: `${Math.max(0, Math.min(100, p.pct))}%`, background: p.color }} className="transition-[width] duration-300" />
+        <span key={p.name} title={`${p.name}: ${p.pct.toFixed(0)}%`} style={{ width: `${Math.max(0, Math.min(100, p.pct))}%`, background: p.color, opacity: p.alpha ?? 1 }} className="transition-[width] duration-300" />
       ))}
     </div>
   );
@@ -445,7 +454,7 @@ const MemoryCard = memo(function MemoryCard({ f }: { f: PulseFrame }) {
         label={`Memory: ${used.toFixed(0)}% used`}
         parts={[
           { name: "Used", pct: used, color: used >= 85 ? "var(--color-warn)" : "var(--color-signal)" },
-          { name: "Cache (freeable)", pct: cached, color: "color-mix(in oklab, var(--color-signal) 35%, var(--color-surface))" },
+          { name: "Cache (freeable)", pct: cached, color: "var(--color-signal)", alpha: 0.35 },
         ]}
       />
       <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 text-sm sm:grid-cols-4">
@@ -476,11 +485,14 @@ const MemoryCard = memo(function MemoryCard({ f }: { f: PulseFrame }) {
   );
 });
 
+// module-level: a new array every render would defeat LiveChart's memo and rebuild its paths
+const NET_SERIES = [
+  { key: "in", label: "In", unit: "Mbit/s" },
+  { key: "out", label: "Out", unit: "Mbit/s" },
+];
+
 function NetCard({ f, hist }: { f: PulseFrame; hist: Point[] }) {
-  const series = [
-    { key: "in", label: "In", unit: "Mbit/s" },
-    { key: "out", label: "Out", unit: "Mbit/s" },
-  ];
+  const series = NET_SERIES;
   return (
     <section className="rounded-xl border border-line bg-surface p-4" aria-label="Network">
       <header className="mb-2 flex items-baseline justify-between">

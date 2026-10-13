@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { RingBuffer } from "@/lib/algo";
 import { fmtWindow, TimeRange } from "./time-range";
 
@@ -378,7 +378,8 @@ function LiveLogs({ start }: { start: Jump | null }) {
   }, [unitInput]);
 
   const units = useMemo(() => [...new Set(lines.map((l) => l.u).filter(Boolean))].sort().slice(0, 50), [lines]);
-  const needle = q.trim().toLowerCase();
+  // typing stays responsive: the filter over up to 20,000 lines runs on the deferred value, after the keystroke paints
+  const needle = useDeferredValue(q).trim().toLowerCase();
   const shown = useMemo(
     () => (needle ? lines.filter((l) => l.m.toLowerCase().includes(needle) || l.u.toLowerCase().includes(needle)) : lines),
     [lines, needle],
@@ -537,17 +538,25 @@ function LiveLogs({ start }: { start: Jump | null }) {
   );
 }
 
+// formatters built once: toLocaleTimeString(…, options) builds a new one per call, per row
+const TIME_FMT = new Intl.DateTimeFormat([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
+const DAY_FMT = new Intl.DateTimeFormat([], { day: "numeric", month: "short" });
+const FULL_FMT = new Intl.DateTimeFormat([], { dateStyle: "medium", timeStyle: "medium" });
+let todayCache = { at: 0, start: 0 };
+/** Midnight today, recomputed at most once a minute. */
+const todayStart = () => {
+  const now = Date.now();
+  if (now - todayCache.at > 60_000) todayCache = { at: now, start: new Date(now).setHours(0, 0, 0, 0) };
+  return todayCache.start;
+};
+
 const LogRow = memo(function LogRow({ l }: { l: Line }) {
   const d = new Date(l.t);
   return (
     <div className="grid grid-cols-[auto_auto_minmax(0,1fr)] gap-x-2 border-b border-line/50 px-3 py-0.5 [content-visibility:auto] [contain-intrinsic-size:auto_22px] hover:bg-paper sm:grid-cols-[auto_auto_12rem_minmax(0,1fr)]">
-      <time className="text-muted tabular-nums" dateTime={d.toISOString()} title={d.toLocaleString()}>
-        {d.toDateString() === new Date().toDateString() ? "" : `${d.toLocaleDateString([], { day: "numeric", month: "short" })} `}
-        {d.toLocaleTimeString([], {
-          hour: "2-digit",
-          minute: "2-digit",
-          second: "2-digit",
-        })}
+      <time className="text-muted tabular-nums" dateTime={d.toISOString()} title={FULL_FMT.format(d)}>
+        {l.t >= todayStart() ? "" : `${DAY_FMT.format(d)} `}
+        {TIME_FMT.format(d)}
       </time>
       <span className={`self-start rounded px-1 text-[10px] font-semibold leading-5 ${prioClass(l.p)}`}>{PRIO_NAME[l.p] ?? l.p}</span>
       <span className="hidden truncate text-signal sm:block" title={l.u}>

@@ -554,3 +554,18 @@ A real install failed twice and a leftover service crash-looped 15,141 times; a 
 **Themes**: the theme switch is three always-visible choices (Light, Dark, Auto) instead of one cycling icon, and switching cross-fades (one composited snapshot, off when reduced motion is on). Audited 8 pages × 4 widths (360, 768, 1280, 2560) × 2 themes: no horizontal scroll, theme applied everywhere, no console errors. Live charts and numbers animate with `requestAnimationFrame` and time-based motion, so they run at the display's own rate (120/144 Hz included) at the same speed.
 
 **Verified**: 33 Go tests (new: script names incl. venv, `-m`, `-c`, `-W ignore`, `--token=`, random stems, java -jar; ngrok address matching; refused-key handling and redaction; one crash = one failure; flood guard); 34 JS tests, lint, type check, build; reproduction in WSL: a crash-looping fake `ngrok-pulse` and an `ngrok`-named process serving the local API → the installer found the tunnel by itself, saved no Tailscale, the agent never tried Tailscale; the python group listed `resize_images.py`, `send_reports.py`, `-m http.server` with the secret argument absent; the Server page expands the group in the browser.
+
+### Update: works on every screen and browser, fewer redraws (council)
+
+**The Memory bar was invisible on a 50-inch display.** A browser-compatibility review found the cause: the bar's *cache* segment and every CPU-core tile were coloured with inline `color-mix(in oklab, …)`, which needs Chrome 111 / Safari 16.2. TV and older desktop browsers (often Chrome 94–108) reject it and draw the element transparent. No build step can fix inline styles, so colours are now a solid theme colour at an opacity over the surface: the same look, supported everywhere. Tile numbers use opacity instead of Tailwind's `/80` colour (whose old-browser fallback is the light-theme colour). Verified: no inline `color-mix` left on any page; the bar draws in both themes at 1920×1080.
+
+**Performance review (4K / 120 Hz / TV hardware)**
+- Live charts wrote an SVG transform on every display refresh, which repaints the chart (10 charts × 120 Hz on Live). They now write it only when the line has moved a whole device pixel and the y-scale has settled: about 10× fewer repaints, same motion.
+- Memory/disk bars animate width inside `contain: layout paint`, so the page grid isn't re-laid out each frame.
+- The Server page no longer re-renders every second to compare clocks: one timer per frame marks stale data; process ages use the frame's own time (no clock skew). Chart series are created once, so memoized charts don't rebuild their paths.
+- CPU-core tiles no longer animate their colour (64–128 repaints per second on big machines).
+- Logs: time formatters are created once instead of per row (20,000-row windows), and search filters on a deferred value so typing stays responsive.
+- History: the seven charts mount in a React transition, so opening History doesn't freeze input.
+- Server-side `finish()` drops a redundant sort (the merge is already in time order): O(n log n) → O(n).
+
+**Old setup guide**: the ngrok service it generated used a placeholder address when none was typed, which ngrok rejects (*Only paid plans may create endpoints with custom subdomains*, ERR_NGROK_313) and which crash-looped 15,000+ times on a real server. Without an address the unit now runs plain `ngrok http 8080`, which uses the account's own free address.
