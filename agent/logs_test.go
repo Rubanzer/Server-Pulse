@@ -296,3 +296,40 @@ func TestOneCrashIsOneFailure(t *testing.T) {
 		t.Fatalf("want 2 failures, got %d", n)
 	}
 }
+
+func TestRepeatHoldAndHiddenServices(t *testing.T) {
+	q := newQuieter(logFilter{Quiet: true, Exclude: []string{"ngrok-pulse.service"}})
+	line := func(sec int64, unit, msg string) *LogEntry { return &LogEntry{T: sec * 1000, Unit: unit, Msg: msg} }
+	if q.keep(line(0, "ngrok-pulse.service", "ERROR: ERR_NGROK_313")) {
+		t.Fatal("a hidden service was shown")
+	}
+	shown := 0
+	var start *LogEntry
+	for s := int64(0); s < 30; s += 5 { // same error every 5 s (digits differ)
+		e := line(1000+s, "app.service", fmt.Sprintf("worker %d crashed", s))
+		if q.keep(e) {
+			shown++
+			if e.Hold > 0 {
+				start = e
+			}
+		}
+	}
+	if shown != 5 || start == nil || start.Hold != 600 {
+		t.Fatalf("5 copies in a minute then hold: shown %d, hold %+v", shown, start)
+	}
+	for s := int64(30); s < 620; s += 5 { // still repeating during the hold (5th copy at +20 s, so until +620 s)
+		if q.keep(line(1000+s, "app.service", "worker 9 crashed")) {
+			t.Fatalf("shown during the hold at +%d s", s)
+		}
+	}
+	after := line(1000+620, "app.service", "worker 1 crashed")
+	if !q.keep(after) || after.Held == 0 {
+		t.Fatalf("after the hold the line returns with the held count: %+v", after)
+	}
+	if !q.keep(line(1000, "other.service", "different line")) {
+		t.Fatal("other lines must not be affected")
+	}
+	if _, err := parseFilter(map[string][]string{"exclude": {"ngrok-pulse.service,bad;rm"}}); err == nil {
+		t.Fatal("accepted an invalid service name")
+	}
+}

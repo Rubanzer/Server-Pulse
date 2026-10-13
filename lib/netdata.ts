@@ -265,12 +265,17 @@ async function getNewEndpoint<T>(link: ServerLink, path: string, schema: z.ZodTy
  * Journal lines, already scrubbed of secrets by the agent: the most recent ones, those after a cursor,
  * or (with `since`) a time window oldest first, paged with the cursor.
  */
-export async function agentLogs(link: ServerLink, q: { after?: string; prio?: number; unit?: string; n?: number; since?: number; until?: number }) {
+export async function agentLogs(
+  link: ServerLink,
+  q: { after?: string; prio?: number; unit?: string; n?: number; since?: number; until?: number; exclude?: string; quiet?: boolean },
+) {
   const p = new URLSearchParams({ n: String(q.n ?? 200), prio: String(q.prio ?? 6) });
   if (q.after) p.set("after", q.after);
   if (q.unit) p.set("unit", q.unit);
   if (q.since) p.set("since", String(q.since));
   if (q.until) p.set("until", String(q.until));
+  if (q.exclude) p.set("exclude", q.exclude);
+  if (q.quiet) p.set("quiet", "1");
   const r = await getNewEndpoint(link, `/api/v1/logs?${p}`, LogsSchema);
   return { entries: r.entries as LogLine[], cursor: r.cursor ?? q.after ?? "", error: r.error, more: r.more ?? false, range: r.range ?? false };
 }

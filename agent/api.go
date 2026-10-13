@@ -266,9 +266,16 @@ func (a *API) handleLogs(w http.ResponseWriter, r *http.Request) {
 	}
 	cursor := after
 	if len(entries) > 0 {
-		cursor = entries[len(entries)-1].Cursor
+		cursor = entries[len(entries)-1].Cursor // the last line read, shown or not: the next page continues after it
 	}
-	writeJSON(w, map[string]any{"entries": entries, "cursor": cursor, "more": more, "range": f.Since > 0})
+	q := newQuieter(f)
+	shown := entries[:0]
+	for i := range entries {
+		if q.keep(&entries[i]) {
+			shown = append(shown, entries[i])
+		}
+	}
+	writeJSON(w, map[string]any{"entries": shown, "cursor": cursor, "more": more, "range": f.Since > 0, "quiet": true})
 }
 
 // events?after=<id>&updated=<unix> — failures recorded by this agent (basic auth).

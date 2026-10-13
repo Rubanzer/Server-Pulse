@@ -265,22 +265,22 @@ export function ServerView() {
           yMax={100}
         />
         <Kpi label="Fullest disk" value={worstDisk?.pct} unit="%" sub={worstDisk?.path} lv={level(worstDisk?.pct ?? 0, 80, 90)} />
-        <article className="flex flex-col gap-2 rounded-xl border border-line bg-surface p-4">
+        <article className="@container flex min-w-0 flex-col gap-2 rounded-xl border border-line bg-surface p-4">
           <h2 className="text-sm font-medium text-muted">Network</h2>
-          <p className="font-cond text-xl font-semibold leading-tight">
-            <span className="text-sm font-medium text-muted">In </span>
+          <p className="whitespace-nowrap font-cond text-[clamp(1rem,10cqi,1.5rem)] font-semibold leading-tight tabular-nums">
+            <span className="text-[0.6em] font-medium text-muted">In </span>
             {mbit(netIn)}
           </p>
-          <p className="font-cond text-xl font-semibold leading-tight">
-            <span className="text-sm font-medium text-muted">Out </span>
+          <p className="whitespace-nowrap font-cond text-[clamp(1rem,10cqi,1.5rem)] font-semibold leading-tight tabular-nums">
+            <span className="text-[0.6em] font-medium text-muted">Out </span>
             {mbit(netOut)}
           </p>
         </article>
       </section>
 
-      <div className="grid gap-3 xl:grid-cols-[3fr_2fr]">
+      <div className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
         <CoreMap f={f} />
-        <div className="grid gap-3">
+        <div className="grid min-w-0 grid-cols-1 gap-3">
           <MemoryCard f={f} />
           <NetCard f={f} hist={hist.net} />
         </div>
@@ -339,14 +339,14 @@ function Kpi({
 }) {
   const chartSeries = useMemo(() => [{ key: series ?? "", label, unit }], [series, label, unit]);
   return (
-    <article className="flex flex-col justify-between gap-2 rounded-xl border border-line bg-surface p-4">
-      <header className="flex items-baseline justify-between">
-        <h2 className="text-sm font-medium text-muted">{label}</h2>
-        {LEVEL_TEXT[lv] && <span className={`text-xs font-semibold ${LEVEL_CLASS[lv]}`}>⚠ {LEVEL_TEXT[lv]}</span>}
+    <article className="@container flex min-w-0 flex-col justify-between gap-2 rounded-xl border border-line bg-surface p-4">
+      <header className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-2">
+        <h2 className="truncate text-sm font-medium text-muted">{label}</h2>
+        {LEVEL_TEXT[lv] && <span className={`shrink-0 text-xs font-semibold ${LEVEL_CLASS[lv]}`}>⚠ {LEVEL_TEXT[lv]}</span>}
       </header>
-      <p className="font-cond text-4xl font-semibold leading-none tracking-tight">
+      <p className="whitespace-nowrap font-cond text-[clamp(1.75rem,16cqi,2.5rem)] font-semibold leading-none tracking-tight tabular-nums">
         <AnimatedNumber value={value} />
-        <span className="ml-1 text-lg font-medium text-muted">{unit}</span>
+        <span className="ml-1 text-[0.45em] font-medium text-muted">{unit}</span>
       </p>
       {sub && <p className="truncate text-xs text-muted">{sub}</p>}
       {spark && series && (
@@ -501,12 +501,16 @@ function NetCard({ f, hist }: { f: PulseFrame; hist: Point[] }) {
       </header>
       <LiveChart points={hist} series={series} windowSec={HISTORY} height={140} />
       <Legend series={series} />
-      <ul className="mt-3 space-y-1 text-sm">
+      <ul className="mt-3 space-y-1.5 text-sm">
         {f.net.map((n) => (
-          <li key={n.name} className="flex flex-wrap justify-between gap-x-4 tabular-nums">
-            <span className="font-medium">{n.name}</span>
-            <span className="text-muted">
-              ↓ {mbit(n.in)} · ↑ {mbit(n.out)} · total {size(n.rxT)} / {size(n.txT)}
+          <li key={n.name} className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-baseline gap-x-3 tabular-nums">
+            <span className="truncate font-medium" title={n.name}>
+              {n.name}
+            </span>
+            <span className="whitespace-nowrap text-muted">↓ {mbit(n.in)}</span>
+            <span className="whitespace-nowrap text-muted">↑ {mbit(n.out)}</span>
+            <span className="col-span-3 text-xs text-muted">
+              total {size(n.rxT)} received · {size(n.txT)} sent
             </span>
           </li>
         ))}
@@ -526,11 +530,11 @@ const DisksCard = memo(function DisksCard({ f }: { f: PulseFrame }) {
           const lv = level(pct, 80, 90);
           return (
             <li key={d.dev + d.path} className="min-w-0">
-              <div className="mb-1 flex items-baseline justify-between gap-2">
-                <span className="truncate font-medium" title={`${d.path} (${d.dev}, ${d.fs})`}>
+              <div className="mb-1 flex flex-wrap items-baseline justify-between gap-x-2">
+                <span className="min-w-0 max-w-full truncate font-medium" title={`${d.path} (${d.dev}, ${d.fs})`}>
                   {d.path}
                 </span>
-                <span className={`shrink-0 text-xs tabular-nums ${lv === "ok" ? "text-muted" : LEVEL_CLASS[lv]}`}>
+                <span className={`ml-auto shrink-0 whitespace-nowrap text-xs tabular-nums ${lv === "ok" ? "text-muted" : LEVEL_CLASS[lv]}`}>
                   {lv !== "ok" && "⚠ "}
                   {pct.toFixed(0)}% · {size(d.avail)} free of {size(d.size)}
                 </span>
@@ -575,7 +579,7 @@ function age(born: number | undefined, now: number) {
 
 function CpuCell({ cpu, scale }: { cpu: number; scale: number }) {
   return (
-    <td className="py-1.5 pr-3 text-right">
+    <td className="whitespace-nowrap py-1.5 pr-3 text-right">
       <span className="inline-flex items-center justify-end gap-2">
         <span className="hidden h-1.5 w-16 overflow-hidden rounded-full bg-paper sm:inline-block" aria-hidden>
           <span className="block h-full bg-signal" style={{ width: `${Math.min(100, cpu / scale)}%` }} />
@@ -591,7 +595,7 @@ function ProcCells({ p, now, indent }: { p: ProcRow; now: number; indent?: boole
   const st = p.st ? STATE[p.st] : undefined;
   return (
     <>
-      <td className={`max-w-[20rem] py-1.5 pr-3 ${indent ? "pl-6" : ""}`}>
+      <td className={`w-full max-w-0 py-1.5 pr-3 ${indent ? "pl-6" : ""}`}>
         <span className="block truncate" title={p.cmd ?? p.file ?? p.name}>
           {indent ? <span className="text-muted">{p.name}</span> : null}
           {p.file ? <span className={indent ? "ml-1.5 font-medium" : "ml-1.5 text-muted"}>{p.file}</span> : null}
@@ -599,10 +603,10 @@ function ProcCells({ p, now, indent }: { p: ProcRow; now: number; indent?: boole
         </span>
         {p.cmd && <span className="block truncate font-mono text-[11px] text-muted">{p.cmd}</span>}
       </td>
-      <td className="py-1.5 pr-3 text-muted">{p.pid}</td>
+      <td className="whitespace-nowrap py-1.5 pr-3 text-muted">{p.pid}</td>
       <td className="max-w-[8rem] truncate py-1.5 pr-3 text-muted">{p.user}</td>
       <CpuCell cpu={p.cpu} scale={1} />
-      <td className="py-1.5 pr-3 text-right">{size(p.mem)}</td>
+      <td className="whitespace-nowrap py-1.5 pr-3 text-right">{size(p.mem)}</td>
       <td className="hidden py-1.5 pr-3 text-right text-muted sm:table-cell">{p.thr}</td>
       <td className="hidden py-1.5 text-right text-muted md:table-cell">{age(p.born, now)}</td>
     </>
@@ -695,7 +699,7 @@ function Processes({ procs, cores, now }: { procs: PulseFrame["procs"]; cores: n
         <table className="w-full min-w-[600px] text-sm tabular-nums">
           <thead className="text-left text-xs text-muted">
             <tr className="border-b border-line">
-              <th className="py-2 pr-3 font-medium">{tab === "top" ? "Program · script" : "Program (count)"}</th>
+              <th className="w-full max-w-0 py-2 pr-3 font-medium">{tab === "top" ? "Program · script" : "Program (count)"}</th>
               <th className="py-2 pr-3 font-medium">PID</th>
               <th className="py-2 pr-3 font-medium">User</th>
               <th className="py-2 pr-3 text-right font-medium">CPU</th>
@@ -730,7 +734,7 @@ function Processes({ procs, cores, now }: { procs: PulseFrame["procs"]; cores: n
                       <td className="py-1.5 pr-3" />
                       <td className="py-1.5 pr-3" />
                       <CpuCell cpu={g.cpu} scale={groupScale} />
-                      <td className="py-1.5 pr-3 text-right">{size(g.mem)}</td>
+                      <td className="whitespace-nowrap py-1.5 pr-3 text-right">{size(g.mem)}</td>
                       <td className="hidden sm:table-cell" />
                       <td className="hidden md:table-cell" />
                     </tr>
@@ -740,7 +744,19 @@ function Processes({ procs, cores, now }: { procs: PulseFrame["procs"]; cores: n
                           <ProcCells p={p} now={now} indent />
                         </tr>
                       ))}
-                    {expanded && g.n > members.length && (
+                    {expanded && members.length === 0 && (
+                      // agents before 1.3.1 send only each program's totals, not its processes
+                      <tr className="border-b border-line/60 bg-paper/50">
+                        <td colSpan={7} className="py-2 pl-6 pr-3 text-xs text-muted">
+                          Your server&apos;s agent doesn&apos;t list a program&apos;s processes yet. Run the command from{" "}
+                          <a className="text-signal underline" href="/connect">
+                            Add server
+                          </a>{" "}
+                          on your server once: it installs the latest agent and keeps your history.
+                        </td>
+                      </tr>
+                    )}
+                    {expanded && members.length > 0 && g.n > members.length && (
                       <tr className="border-b border-line/60 bg-paper/50">
                         <td colSpan={7} className="py-1.5 pl-6 text-xs text-muted">
                           and {g.n - members.length} more using less CPU
@@ -754,7 +770,7 @@ function Processes({ procs, cores, now }: { procs: PulseFrame["procs"]; cores: n
               return (
                 <Fragment key={r.key}>
                   <tr className="border-b border-line">
-                    <td className="max-w-[20rem] py-1.5 pr-3">
+                    <td className="w-full max-w-0 py-1.5 pr-3">
                       <button
                         onClick={() => toggle(r.key)}
                         aria-expanded={expanded}
@@ -768,19 +784,19 @@ function Processes({ procs, cores, now }: { procs: PulseFrame["procs"]; cores: n
                         {p.st && STATE[p.st] && <span className={`text-xs ${STATE[p.st]!.cls}`}>{STATE[p.st]!.label}</span>}
                       </button>
                     </td>
-                    <td className="py-1.5 pr-3 text-muted">{p.pid}</td>
+                    <td className="whitespace-nowrap py-1.5 pr-3 text-muted">{p.pid}</td>
                     <td className="max-w-[8rem] truncate py-1.5 pr-3 text-muted">{p.user}</td>
                     <CpuCell cpu={p.cpu} scale={1} />
-                    <td className="py-1.5 pr-3 text-right">{size(p.mem)}</td>
+                    <td className="whitespace-nowrap py-1.5 pr-3 text-right">{size(p.mem)}</td>
                     <td className="hidden py-1.5 pr-3 text-right text-muted sm:table-cell">{p.thr}</td>
                     <td className="hidden py-1.5 text-right text-muted md:table-cell">{age(p.born, now)}</td>
                   </tr>
                   {expanded && (
                     <tr className="border-b border-line/60 bg-paper/50">
                       <td colSpan={7} className="px-6 py-2 text-xs">
-                        <dl className="grid grid-cols-[max-content_1fr] gap-x-4 gap-y-1">
+                        <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4 gap-y-1">
                           <dt className="text-muted">Runs</dt>
-                          <dd>{p.file ? `${p.name} ${p.file}` : p.name}</dd>
+                          <dd className="break-all">{p.file ? `${p.name} ${p.file}` : p.name}</dd>
                           {p.cmd && (
                             <>
                               <dt className="text-muted">Command</dt>

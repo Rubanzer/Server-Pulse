@@ -130,13 +130,13 @@ function LiveChartImpl({ points, series, windowSec, height, yMax, compact, class
   return (
     <div
       ref={wrap}
-      className={`relative select-none ${className}`}
+      className={`relative min-w-0 select-none ${className}`}
       style={{ height }}
       onPointerMove={onMove}
       onPointerLeave={() => setHover(null)}
     >
       {width > 0 && (
-        <svg width={width} height={height} className="block overflow-hidden" aria-hidden>
+        <svg width={width} height={height} className="absolute inset-0 block overflow-hidden" aria-hidden>
           <defs>
             <clipPath id={clipId}>
               <rect x={pad.l} y={0} width={w} height={height} />

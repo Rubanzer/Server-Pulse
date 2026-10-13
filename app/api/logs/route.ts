@@ -17,6 +17,9 @@ export async function GET(req: NextRequest) {
   const prio = Math.min(7, Math.max(0, Number(q.get("prio") ?? 6) || 6));
   const unit = q.get("unit") ?? "";
   if (unit && !/^[A-Za-z0-9@:._-]{1,100}$/.test(unit)) return Response.json({ error: "Invalid service name" }, { status: 400 });
+  const exclude = (q.get("exclude") ?? "").split(",").filter(Boolean);
+  if (exclude.length > 20 || exclude.some((u) => !/^[A-Za-z0-9@:._-]{1,100}$/.test(u))) return Response.json({ error: "Invalid service to hide" }, { status: 400 });
+  const quiet = q.get("quiet") === "1";
   const after = q.get("after") ?? "";
   if (after.length > 300) return Response.json({ error: "Invalid cursor" }, { status: 400 });
   const since = Math.floor(Number(q.get("since"))) || 0;
@@ -26,7 +29,7 @@ export async function GET(req: NextRequest) {
   if (demo) return Response.json(since ? demoRangeLogs(since, until, after) : demoLogs(after), { headers: { "cache-control": "no-store" } });
   if (!link) return Response.json({ error: error ?? "Connect a server first" }, { status: 400 });
   try {
-    const r = await agentLogs(link, { after: after || undefined, prio, unit: unit || undefined, n: since || after ? 500 : 200, since, until });
+    const r = await agentLogs(link, { after: after || undefined, prio, unit: unit || undefined, n: since || after ? 500 : 200, since, until, exclude: exclude.join(",") || undefined, quiet });
     if (since && !r.range)
       // an agent from before time ranges ignores since/until and would answer with the latest lines
       return Response.json({ error: "Browsing past logs needs agent 1.2 or newer. Open Add server and run its one command on your server: it installs the latest agent over the old one and keeps your history." }, { status: 404 });
