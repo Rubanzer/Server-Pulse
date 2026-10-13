@@ -59,7 +59,8 @@ async function resolve(sid: string): Promise<LinkState> {
     if (!raw) return { link: null, error: null, source: null, demo: true };
     const source = fromDb ? "settings" : "env";
     try {
-      return { link: parseServerLink(raw, { sid, trusted: true }), error: null, source, demo: false };
+      // only the SERVER_URL env var is trusted; a link saved in the app (Settings or pairing) is guarded
+      return { link: parseServerLink(raw, { sid, trusted: !fromDb }), error: null, source, demo: false };
     } catch (e) {
       return { link: null, error: (e as Error).message, source, demo: false };
     }

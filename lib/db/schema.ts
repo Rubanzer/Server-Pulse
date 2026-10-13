@@ -51,6 +51,24 @@ export const syncRuns = pgTable(
   (t) => [index("sync_runs_server_started").on(t.serverId, t.startedAt.desc())],
 );
 
+/**
+ * One-time pairing codes from the "Add server" screen. Only a SHA-256 of the code is stored; a code works
+ * once, for 10 minutes, and binds the agent that redeems it to the server row of whoever created it.
+ */
+export const pairings = pgTable(
+  "pairings",
+  {
+    codeHash: text("code_hash").primaryKey(),
+    serverId: text("server_id").notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    usedAt: timestamp("used_at", { withTimezone: true }),
+    hostname: text("hostname"),
+    agentVersion: text("agent_version"),
+    error: text("error"),
+  },
+  (t) => [index("pairings_server").on(t.serverId)],
+);
+
 /** Key/value store. Per-server keys are prefixed "<serverId>:". */
 export const settings = pgTable("settings", {
   key: text("key").primaryKey(),

@@ -39,18 +39,26 @@ async function get<T>(link: ServerLink, path: string, schema: z.ZodType<T>): Pro
   const guarded = !link.trusted && !process.env.ALLOW_PRIVATE_LINKS;
   let status: number;
   let text: string;
+  let header: (name: string) => string;
   try {
     // SSRF-safe path for account links: see lib/guarded-get.ts
-    if (guarded)
-      ({ status, text } = await guardedGet(link.base + path, headers, {
+    if (guarded) {
+      const r = await guardedGet(link.base + path, headers, {
         timeoutMs: LIMITS.requestTimeoutMs,
         maxBytes: MAX_BODY,
         isPrivate: isPrivateAddress,
-      }));
-    else {
+      });
+      status = r.status;
+      text = r.text;
+      header = (n) => {
+        const v = r.headers[n];
+        return Array.isArray(v) ? v.join(", ") : (v ?? "");
+      };
+    } else {
       const res = await fetch(link.base + path, { headers, signal: AbortSignal.timeout(LIMITS.requestTimeoutMs), cache: "no-store" });
       status = res.status;
       text = await res.text();
+      header = (n) => res.headers.get(n) ?? "";
     }
   } catch (e) {
     const err = e as Error & { code?: string; cause?: { code?: string; message?: string } };
@@ -61,13 +69,20 @@ async function get<T>(link: ServerLink, path: string, schema: z.ZodType<T>): Pro
   }
   if (guarded && status >= 300 && status < 400) throw new NetdataError(`${link.host} tried to redirect; use the final link directly`);
   if (status < 200 || status >= 300) {
+    // say what's actually answering, in plain words (the most common setup mistakes)
+    const ngrokErr = header("ngrok-error-code");
+    if (ngrokErr) throw new NetdataError(`${link.host}: the ngrok tunnel isn't serving the agent (${ngrokErr}). On the server, start ngrok pointing at 127.0.0.1:19998.`, status);
+    if (status === 401 && !/server-pulse|netdata/i.test(header("www-authenticate")) && /realm/i.test(header("www-authenticate")))
+      throw new NetdataError(`${link.host} asks for a different login than the Server Pulse agent (for example ngrok --basic-auth or a btop page). Point the tunnel at 127.0.0.1:19998 without a password of its own.`, status);
     throw new NetdataError(`HTTP ${status} from ${link.host}${HINTS[status] ? ` — ${HINTS[status]}` : ""}`, status);
   }
   let body: unknown;
   try {
     body = JSON.parse(text);
   } catch {
-    throw new NetdataError(`${link.host} did not return JSON — is the link pointing at Netdata (…/history)?`);
+    if (/^\s*</.test(text))
+      throw new NetdataError(`${link.host} answered with a web page (for example the btop terminal), not the Server Pulse agent. Point the tunnel at 127.0.0.1:19998.`);
+    throw new NetdataError(`${link.host} did not return JSON — is the link pointing at the agent or Netdata (…/history)?`);
   }
   const parsed = schema.safeParse(body);
   if (!parsed.success) throw new NetdataError(`Unexpected response from Netdata at ${path.split("?")[0]}`);
@@ -211,4 +226,13 @@ export async function series(link: ServerLink, metric: Metric, after: number, be
     }
   }
   return [];
+}
+
+// ---------- /api/v1/pulse (agent v2: btop-style frame) ----------
+
+const PulseSchema = z.looseObject({ seq: z.number(), cpu: z.looseObject({ cores: z.array(z.number()) }) });
+
+/** One full live frame from the agent (per-core CPU, temps, disks, network, processes). */
+export async function pulseSnapshot(link: ServerLink): Promise<import("@/lib/pulse").PulseFrame> {
+  return (await get(link, "/api/v1/pulse", PulseSchema)) as unknown as import("@/lib/pulse").PulseFrame;
 }

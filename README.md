@@ -65,6 +65,8 @@ Server Pulse has two parts that only talk over one HTTPS link:
 - 👤 **Accounts** — sign up with email and password; each account gets its own server link and its own private history.
 - 🔌 **Connect in the app** — paste your ngrok or Tailscale link on `/connect`; data starts flowing immediately, no redeploy.
 - 🌗 **Light, dark or system theme**, and a layout that works from a 320 px phone to a 4K screen.
+- 🖥️ **btop in the browser, done properly**: the Server page shows every core (heatmap with temperatures), memory, disks, network and processes, streamed live every second straight from your server.
+- 🔗 **Add a server with one command**: a one-time code pairs the agent with your dashboard; no links or passwords to copy.
 - 🎞️ **Smooth at 60 fps** — live charts scroll continuously with zero added delay; pages switch instantly.
 - 🧭 **Built-in server setup guide** — `/setup` generates every command for your server (passwords, tunnel, alerts), checks for each step, a downloadable script and your final `SERVER_URL`.
 
@@ -270,6 +272,17 @@ server-pulse/
 
 ## 🚀 Quick start
 
+**Fastest: Add server (one command, nothing to copy back)**
+
+1. Deploy the dashboard to Vercel and connect Neon (Storage → Neon) so accounts work.
+2. Create your account, open **Add server**, and copy the command it shows:
+   ```bash
+   curl -fsSL https://<your-dashboard>/install.sh | sudo bash -s -- ABCD-1234
+   ```
+3. Paste it on your Ubuntu server. The first time it shows a Tailscale login link; open it and approve the server. The dashboard page moves on by itself and opens the live **Server** view.
+
+Already use ngrok? Point it at `127.0.0.1:19998` (without `--basic-auth`) and add your address at the end of the command: `… ABCD-1234 https://your-name.ngrok-free.dev`.
+
 **Option A: accounts (no env vars to edit)**
 
 1. Deploy to Vercel and connect Neon (Storage → Create Database → Neon), then set `SESSION_SECRET` to any long random string.
@@ -285,6 +298,14 @@ server-pulse/
 ---
 
 ## 🖥️ Part 1 — Server kit (Ubuntu)
+
+> **Simplest path: the one-file agent.** [`agent/`](agent/README.md) is a single binary that collects the vitals, keeps 30 days of history and publishes them over Tailscale Funnel, with no Netdata, Caddy or tunnel install:
+>
+> ```bash
+> sudo ./server-pulse-agent-linux-amd64 install --authkey tskey-auth-…   # prints the dashboard link
+> ```
+>
+> The steps below are the classic kit (Netdata + Caddy + btop in the browser), still fully supported.
 
 Run every block as your normal sudo user. Change only values marked `CHANGE_ME`. Use passwords with letters and numbers only (they go inside a URL later).
 

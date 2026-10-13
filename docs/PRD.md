@@ -389,3 +389,42 @@ Recharts is now loaded only by the History page.
 | Tailscale machine keys expire after ~180 days by default, silently breaking the Funnel link | The setup guide's Tailscale step shows a "Needed for 24/7" callout to disable key expiry, with a check command; the downloadable script reminds you at the end; README + troubleshooting updated |
 | A laptop or desktop that sleeps drops the tunnel and stops recording | New setup step "Keep the machine awake 24/7": masks sleep / suspend / hibernate targets and ignores the lid switch (logind drop-in, applied at the next reboot so a desktop session isn't killed). Included in the one-file script; undone by the uninstall block |
 | Unclear what "24/7" means on ngrok | Documented: the tunnel itself is always up (systemd, free static domain); only the dashboard's live view is rationed by budget mode |
+
+### Update: one-file server agent (`agent/`)
+
+Requested: "a single file I start on Ubuntu that runs 24/7 in the background and publishes the analytics through Tailscale for the Vercel app to fetch".
+
+| Decision | Choice | Why |
+| --- | --- | --- |
+| Data flow | **Pull**: the agent serves the stats, the dashboard fetches them | Live every 2 s and $0. Push would need hosted storage written every few seconds (Neon free compute can't stay awake 24/7) |
+| Language / packaging | **Go**, one static binary per arch (linux amd64, arm64; ~22 MB) | No runtime or dependencies on the server |
+| Public link | **Embedded Tailscale (`tsnet`) + Funnel** | No separate Tailscale install, no open ports; stable `https://<name>.<tailnet>.ts.net` |
+| API | **Netdata-compatible subset** (`info`, `allmetrics` incl. `filter`, `data`, `charts`) at `/api/v1` and `/history/api/v1` | The existing dashboard works unchanged (verified) |
+| Metrics | Read directly from `/proc` and `/sys` every second; physical disks and NICs only | Replaces Netdata for the 8 charts the dashboard uses |
+| History | Two O(1) ring tiers: 1 s for 1 h, 1 min for 30 days (~9 MB); 30-day tier saved atomically every 5 min and on shutdown | Survives reboots; Netdata-style "30 days on the server" for the nightly sync and backfill |
+| Service | `install` sets up systemd: `Restart=always`, `DynamicUser`, `ProtectSystem=strict`, `NoNewPrivileges`, config passed via `LoadCredential`; keeps the machine awake | 24/7 with least privilege |
+| Releases | GitHub Actions builds, tests and attaches both binaries + `SHA256SUMS` to `agent-v*` tags | Download instead of build |
+
+**Verified:** unit tests (parsers against real `/proc` text, CPU % math, rate math, ring buckets and gaps, minute roll-up, save/load, API auth, Netdata shapes, NaN→null, filter, 404, read-only) on Linux. On a real Ubuntu 24.04 (WSL): the agent served live metrics, and the **unchanged dashboard** read it (live, 5-minute history, connection test). `install` created the hardened service (dynamic user, root-only config), it came back 5 s after `SIGKILL`, history was saved on stop, and `uninstall --purge` removed everything.
+
+**Not yet verified:** the Funnel connection itself (needs a Tailscale auth key from the owner's tailnet).
+
+The classic server kit (Netdata + Caddy + tunnel) remains supported; the agent is the simpler path.
+
+### Update: live server view (btop in the product) and "easy as possible" onboarding
+
+Two design councils (UX/data-viz, systems/free-tier, security/ops; then onboarding, install/connectivity, product simplicity) reviewed the plan before it was built.
+
+**Live server view (`/server`)**: per-core CPU heatmap (8×8 for 64 threads, Usage / Temperature toggle, absolute thermal thresholds, per-physical-core temps mapped through `core_id`), KPI tiles with 5-min sparklines, memory + swap, every real filesystem with usage and per-disk I/O, per-interface network, and a process table (top 25 by CPU, grouped by program, search, sort, order frozen while the pointer is over it). Streams **1 frame/s straight from the agent to the browser** (gzip NDJSON over `fetch`, 60-s single-use HMAC token in a header, CORS origin allow-list); falls back to a dashboard-side snapshot every 2 s when the browser can't reach the agent (e.g. ngrok's browser warning). Pauses 30 s after the tab is hidden, dims stale data, reconnects with backoff.
+
+**Agent v2**: `/api/v1/pulse` (snapshot) and `/api/v1/pulse/stream`; one sampler fanned out to ≤ 8 viewers (≤ 3 per IP), latest-frame-wins, 5-s write deadline, 15-min sessions; 5 bad tokens/min → 10-min block; process scan reads only `stat`/`statm`, only while someone watches; command lines hidden by default (opt-in `--show-args` with a tested scrubber); `/agent/status` answered only to local requests.
+
+**Pairing (no links, no passwords)**: *Add server* shows `curl -fsSL <dashboard>/install.sh | sudo bash -s -- CODE`. The code is 8 characters, valid 10 minutes, single use, stored only as a SHA-256. `install.sh` downloads the agent from GitHub Releases and **verifies its SHA-256** before running it. The agent installs itself, opens its Tailscale link (no auth key needed: it shows a Tailscale **login link** to approve the machine) or uses `--public-url` for ngrok, then registers its link with the dashboard. The link is tested before the code is spent; a single atomic `UPDATE` makes reuse impossible. The page follows along (Waiting → Connected → Live data) and opens the server view.
+
+**No dead ends**: sign-up without a database shows a 3-step *Finish setup*; login no longer explains "the password inside your server link"; manual connect has **Address / Username / Password** fields; pasting a Tailscale auth key, invite link, ngrok token or btop address gets a plain explanation; connection errors say what is actually answering (a different login such as ngrok `--basic-auth`, a web page such as btop, or an ngrok error code).
+
+**Decided not to do (yet)**: agent *push* to the dashboard (needs Upstash Redis + Vercel invocation budget, 30-s live start; planned as an option for servers that can't run a tunnel); removing the classic kit / env-var mode (kept, demoted to Advanced).
+
+**Verified**: 17 Go tests on Linux (tokens, replay, tamper, scrubber, `/proc/[pid]/stat` parsing, mount filter, hyperthread temp mapping, end-to-end gzip stream with CORS and bad-token rejection, status locality, pairing client); 31 JS tests (incl. paste guard, link composer); end-to-end on Ubuntu 24.04 (WSL) + embedded Postgres: wrong code refused, wrong password reported while the code stays usable, pairing succeeds once and only once, live data flows, stream token + fallback work; browser: `/server` streams at "Live · 1 s", 60 fps (worst frame 17.1 ms), 64-core demo in dark mode, no console errors.
+
+**Needs the owner**: make the GitHub repository public and push a tag `agent-v1.1.0` so the release workflow publishes the binaries the installer downloads.

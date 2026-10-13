@@ -2,7 +2,6 @@ import { type NextRequest } from "next/server";
 import { z } from "zod";
 import { guard } from "@/lib/auth";
 import { parseServerLink } from "@/lib/config";
-import { ENV_SERVER } from "@/lib/db/schema";
 import { info } from "@/lib/netdata";
 import { getLink } from "@/lib/settings";
 
@@ -19,8 +18,8 @@ export async function POST(req: NextRequest) {
   const started = Date.now();
   try {
     const state = await getLink(s.sid);
-    // a typed link is only trusted for the env server; account links go through the SSRF guard
-    const link = body.data.url ? parseServerLink(body.data.url, { sid: s.sid, trusted: s.sid === ENV_SERVER }) : state.link;
+    // a typed link is never trusted: it goes through the SSRF guard (only SERVER_URL from the env is)
+    const link = body.data.url ? parseServerLink(body.data.url, { sid: s.sid, trusted: false }) : state.link;
     if (!link) return Response.json({ ok: false, error: state.error ?? "No server link configured" });
     const i = await info(link);
     return Response.json({ ok: true, ms: Date.now() - started, info: i, tunnel: link.tunnel });

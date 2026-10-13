@@ -19,10 +19,13 @@ function serve(handler: Parameters<typeof createServer>[1]) {
 }
 const open = { timeoutMs: 1000, maxBytes: 1024, isPrivate: () => false, request };
 
-test("normal response", async () => {
+test("normal response", async (t) => {
   const s = await serve((_q, r) => r.end('{"ok":1}'));
-  assert.deepEqual(await guardedGet(s.url, {}, open), { status: 200, text: '{"ok":1}' });
-  s.close();
+  t.after(s.close); // close even when an assertion fails, or the open server keeps the run alive
+  const r = await guardedGet(s.url, {}, open);
+  assert.equal(r.status, 200);
+  assert.equal(r.text, '{"ok":1}');
+  assert.equal(r.headers["content-length"], "8");
 });
 
 test("a server trickling bytes hits the hard deadline", async () => {

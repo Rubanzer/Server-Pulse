@@ -22,10 +22,15 @@ export function Nav({ role, email }: { role: Role | null; email: string | null }
   const links = role
     ? [
         { href: "/", label: "Live" },
+        { href: "/server", label: "Server" },
         { href: "/history", label: "History" },
         { href: "/reports", label: "Reports" },
-        ...(role === "owner" ? [{ href: "/settings", label: "Settings" }] : []),
-        { href: "/setup", label: "Server setup" },
+        ...(role === "owner"
+          ? [
+              { href: "/connect", label: "Add server" },
+              { href: "/settings", label: "Settings" },
+            ]
+          : []),
       ]
     : [
         { href: "/login", label: "Log in" },

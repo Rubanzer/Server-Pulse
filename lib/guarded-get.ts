@@ -22,7 +22,7 @@ const fail = (code: string, name = "Error") => Object.assign(new Error(code), { 
  *   covers DNS + connect + the whole body, so a server trickling bytes can't hold the caller open.
  * - The promise settles exactly once, whatever order the socket events arrive in.
  */
-export function guardedGet(url: string, headers: Record<string, string>, o: Opts): Promise<{ status: number; text: string }> {
+export function guardedGet(url: string, headers: Record<string, string>, o: Opts): Promise<{ status: number; text: string; headers: Record<string, string | string[] | undefined> }> {
   return new Promise((resolve, reject) => {
     let done = false;
     const settle = (fn: () => void) => {
@@ -55,7 +55,7 @@ export function guardedGet(url: string, headers: Record<string, string>, o: Opts
           req.destroy();
         } else chunks.push(c);
       });
-      res.on("end", () => settle(() => resolve({ status: res.statusCode ?? 0, text: Buffer.concat(chunks).toString("utf8") })));
+      res.on("end", () => settle(() => resolve({ status: res.statusCode ?? 0, text: Buffer.concat(chunks).toString("utf8"), headers: res.headers })));
       res.on("error", (e) => settle(() => reject(e)));
       res.on("close", () => settle(() => reject(fail("ECONNRESET"))));
     });

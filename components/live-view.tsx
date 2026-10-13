@@ -255,11 +255,11 @@ export function LiveView() {
   if (data?.mode === "connect")
     return (
       <section className="mx-auto mt-[8vh] max-w-xl rounded-xl border border-line bg-surface p-6 text-center sm:p-8">
-        <h1 className="text-2xl font-semibold tracking-tight">Connect your server to start</h1>
-        <p className="mt-2 text-muted">Paste your server link and live vitals appear here within seconds.</p>
+        <h1 className="text-2xl font-semibold tracking-tight">Add your server to start</h1>
+        <p className="mt-2 text-muted">Copy one command to your Ubuntu server and live vitals appear here within seconds.</p>
         <div className="mt-6 flex flex-col justify-center gap-2 sm:flex-row">
           <Link href="/connect" prefetch className="rounded-lg bg-signal px-4 py-2.5 font-medium text-on-signal">
-            Connect server
+            Add server
           </Link>
           <Link href="/setup" prefetch className="rounded-lg border border-line px-4 py-2.5 hover:border-signal">
             Set up a server first

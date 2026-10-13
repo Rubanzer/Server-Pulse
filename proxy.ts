@@ -19,6 +19,6 @@ export async function proxy(req: NextRequest) {
 export const config = {
   matcher: [
     // API routes are excluded: each one checks the session itself (guard), so the proxy would only add a hop
-    "/((?!api/|login|signup|setup|_next/static|_next/image|favicon.ico|icon|apple-icon|manifest.webmanifest|sw.js).*)",
+    "/((?!api/|install\.sh|login|signup|setup|_next/static|_next/image|favicon.ico|icon|apple-icon|manifest.webmanifest|sw.js).*)",
   ],
 };

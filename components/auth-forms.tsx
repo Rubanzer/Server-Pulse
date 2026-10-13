@@ -69,7 +69,9 @@ export function LoginForm({ accounts, shared, demo }: { accounts: boolean; share
       intro={
         mode === "account"
           ? "Use the email and password of your Server Pulse account."
-          : <>Use the dashboard password. By default it is the password inside your server link.{demo && <> Nothing is set up yet, so it is <code className="font-mono">demo</code>.</>}</>
+          : demo
+            ? <>This dashboard isn&apos;t set up yet. To look around with sample data, use the password <code className="font-mono">demo</code>.</>
+            : "Use the dashboard password that was set for this site."
       }
     >
       {accounts && shared && (
@@ -130,19 +132,17 @@ export function LoginForm({ accounts, shared, demo }: { accounts: boolean; share
             </Link>
           </p>
         )}
-        <p>
-          Server not set up yet? Follow the{" "}
-          <Link href="/setup" className="text-signal underline">
-            server setup guide
-          </Link>
-          .
-        </p>
+        {!accounts && demo && (
+          <p>
+            Want your own account and servers? <Link href="/signup" className="text-signal underline">Finish setup</Link> (about a minute).
+          </p>
+        )}
       </div>
     </AuthCard>
   );
 }
 
-export function SignupForm({ open }: { open: boolean }) {
+export function SignupForm({ open, reason }: { open: boolean; reason: "nodb" | "closed" | null }) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -164,10 +164,25 @@ export function SignupForm({ open }: { open: boolean }) {
   if (!open)
     return (
       <AuthCard title="Create an account">
-        <p className="rounded-lg border border-line bg-surface p-4 text-sm">
-          Sign-up isn&apos;t available here. Accounts need a database (Vercel → Storage → Neon), and the owner may have turned
-          sign-up off with <code className="font-mono text-xs">DISABLE_SIGNUP</code>.
-        </p>
+        {reason === "closed" ? (
+          <p className="rounded-lg border border-line bg-surface p-4 text-sm">
+            The owner of this dashboard has closed sign-up. Ask them for an account, or log in if you already have one.
+          </p>
+        ) : (
+          <div className="space-y-3 rounded-lg border border-warn/50 bg-surface p-4 text-sm">
+            <p className="font-medium">Finish setup to create accounts</p>
+            <p className="text-muted">Accounts are stored in a free database that isn&apos;t connected yet. In Vercel:</p>
+            <ol className="list-decimal space-y-1 pl-5">
+              <li>
+                Your project → <b>Storage</b> → <b>Create Database</b> → <b>Neon</b> (free) → connect it to this project.
+              </li>
+              <li>
+                <b>Deployments</b> → ⋯ on the latest one → <b>Redeploy</b>.
+              </li>
+              <li>Reload this page.</li>
+            </ol>
+          </div>
+        )}
         <p className="mt-4 text-sm">
           <Link href="/login" className="text-signal underline">
             Back to log in
