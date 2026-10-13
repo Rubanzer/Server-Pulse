@@ -95,6 +95,8 @@ func systemTailscale() (publicURL, note string, port int) {
 		// --bg: tailscaled keeps it after the installer exits and across restarts; only this one port is touched
 		msg, err := exec.CommandContext(ctx, "tailscale", "funnel", "--bg", "--https="+strconv.Itoa(port), agentTarget).CombinedOutput()
 		if err != nil || ctx.Err() != nil {
+			// it may have opened the port before failing or timing out: close it, nothing records it
+			stopSystemFunnel(port)
 			if link := tsAdminLink.Find(msg); link != nil {
 				return "", "Tailscale needs Funnel allowed for this machine first. Open " + string(link) + ", allow it, then run the command again", 0
 			}
