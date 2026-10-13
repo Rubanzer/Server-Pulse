@@ -573,3 +573,24 @@ A real install failed twice and a leftover service crash-looped 15,141 times; a 
 ### Update: Tailscale found by itself, like ngrok
 
 If Tailscale is already installed and logged in on the server, the *Add server* command publishes the agent through it with Funnel (`tailscale funnel --bg`, kept by tailscaled across restarts) instead of starting the agent's own Tailscale node that needed a second login. It never overwrites the owner's own services: it uses Funnel port 443, or 8443 / 10000 when 443 already serves something else, and reuses the port an earlier install set up. If Funnel isn't allowed for the machine yet, the installer shows Tailscale's link to allow it instead of hanging. Uninstall turns off only the port the agent turned on. Order on install: `--public-url`, a running ngrok, a logged-in Tailscale, a saved address, then the agent's own Tailscale. Verified in WSL with a stand-in `tailscale` reporting a logged-in machine whose 443 serves another site: the agent was published on :8443, the config saved no embedded Tailscale, and uninstall ran `tailscale funnel --https=8443 off`; 34 Go tests (new: status and serve-config parsing, port choice).
+
+### Update: no UI bleeding on real data, quieter logs (UI council)
+
+**Responsiveness.** A UI council (principal UI engineer, design-systems lead, QA lead) found why the UI "bled" on real servers while checks passed: `body { overflow-x: hidden }` clipped anything too wide instead of letting it scroll, and the demo data was too small to reproduce real values. Fixed at the source:
+- network rows are a grid (name truncates, ↓/↑ never wrap, totals on a second line) so `enx00e04c6861f4` no longer breaks the line;
+- the process table's name column takes the remaining width and truncates (a `max-w` on a table cell is ignored), numbers never wrap; details break long paths;
+- grid tracks use `minmax(0, …)` and charts are absolutely placed, so narrowing the window shrinks them instead of clipping;
+- KPI tiles are container-query sized: big numbers scale with the tile (`clamp(…, cqi, …)`), headers wrap instead of colliding;
+- disk rows wrap path and stats; logs toolbar wraps; inputs grow; History's cross-links wrap whole;
+- the menu shows all links inline only from 1024 px (scrolling row with a fade below), the email only from 1280 px;
+- long URLs and errors break inside their box (`overflow-wrap: break-word`); `overflow-x: clip` instead of `hidden`;
+- touch screens: every control at least 40 px tall;
+- big displays: the root font scales up from 2200 px and 3000 px wide (a 50-inch TV at 100 % is 3840 px), with the content width in rem so the layout keeps its proportions.
+
+The demo data is now worst-case but real-world (long host, NIC and mount names, 128 threads, 251 GiB RAM, 7.3 TiB array, 1.2 GiB/s disk, long JSON/URL/token log lines, a 2,000-character and a multi-line failure). Verified with an automated check (elements past their card, text past its box, anything past the screen; intentional scrollers and SVG labels excluded) on 8 pages × 15 widths (320–3840 px) with groups and failures opened: no findings.
+
+**Process groups on older agents** no longer say "and 51 more using less CPU" with nothing listed: they explain that the agent needs updating (the *Add server* command).
+
+**Logs: hide a service, hold repeats (agent 1.3.2).** Click a service name on any line to hide it (chips to show it again; remembered on the device). *Hold repeats* (on by default): a line that repeats 5 times within a minute is shown once more marked *repeating 5× a minute: holding copies for 10 min*, further copies are held back for 10 minutes, and the next copy after that shows *+N repeats held back*. Both happen on the agent (`exclude=`, `quiet=1`), so held lines aren't even sent; older agents still hide services in the browser. Failures already work this way (one row with a repeat count, saved in the database).
+
+**Security fix (automated review)**: a Tailscale Funnel port the agent opened is closed on any reinstall that stops using it, a failed `funnel --bg` is rolled back, and a still-used Funnel stays recorded when Tailscale is briefly unreachable.

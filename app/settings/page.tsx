@@ -312,7 +312,7 @@ export default function SettingsPage() {
                         {r.status ?? "running"}
                       </td>
                       <td className="py-2 pr-3 text-right">{r.rowsInserted ?? "—"}</td>
-                      <td className="py-2 text-xs text-muted">{r.error}</td>
+                      <td className="py-2 text-xs text-muted [overflow-wrap:anywhere]">{r.error}</td>
                     </tr>
                   ))}
                 </tbody>

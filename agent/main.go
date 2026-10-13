@@ -353,6 +353,9 @@ func cmdInstall(args []string) error {
 	}
 
 	cfg, _ := loadConfig(configPath) // keep the existing password on re-install
+	// a Funnel port an earlier install opened: closed below unless this install keeps using exactly it
+	oldFunnel := cfg.FunnelPort
+	cfg.FunnelPort = 0
 	if cfg.Password == "" {
 		cfg.Password = randomPassword(24)
 	}
@@ -392,8 +395,6 @@ func cmdInstall(args []string) error {
 		if u := detectNgrok(); u != "" {
 			step("Found your ngrok tunnel at " + u + ": using it (no Tailscale needed)")
 			cfg.PublicURL, cfg.Tunnel = u, false
-			stopSystemFunnel(cfg.FunnelPort) // switched away from Funnel: don't leave a second public address
-			cfg.FunnelPort = 0
 		} else if u, note, port := systemTailscale(); u != "" {
 			// Tailscale already logged in on this machine: publish through it, no second login
 			step("Found Tailscale on this machine: publishing the agent with Funnel at " + u)
@@ -404,8 +405,16 @@ func cmdInstall(args []string) error {
 			}
 			if cfg.PublicURL != "" {
 				cfg.Tunnel = false // a tunnel saved by an earlier install
+				if oldFunnel != 0 && !strings.Contains(cfg.PublicURL, ".ngrok") {
+					cfg.FunnelPort = oldFunnel // the saved address is that Funnel: still in use, keep it recorded
+				}
 			}
 		}
+	}
+	// whatever this install chose (--public-url, --no-tunnel, ngrok, another Funnel port), the agent
+	// must not stay published at an address it no longer uses
+	if oldFunnel != 0 && oldFunnel != cfg.FunnelPort {
+		stopSystemFunnel(oldFunnel)
 	}
 	if *pair != "" && len(cfg.Origins) == 0 {
 		return errors.New("--pair needs --dashboard https://your-dashboard (the command from the dashboard includes both)")

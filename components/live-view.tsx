@@ -105,9 +105,10 @@ function Ago({ t }: { t: number | null }) {
 
 function Big({ n, unit, digits = 0 }: { n: number | undefined; unit: string; digits?: number }) {
   return (
-    <p className="font-cond text-4xl font-semibold leading-none tracking-tight">
+    // sized by the tile (container query), not the screen: never wider than its tile
+    <p className="whitespace-nowrap font-cond text-[clamp(1.75rem,16cqi,2.5rem)] font-semibold leading-none tracking-tight tabular-nums">
       <AnimatedNumber value={n} digits={digits} />
-      <span className="ml-1 text-lg font-medium text-muted">{unit}</span>
+      <span className="ml-1 text-[0.45em] font-medium text-muted">{unit}</span>
     </p>
   );
 }
@@ -146,13 +147,13 @@ function KpiValue({ m, v, info }: { m: Metric; v: Dims | undefined; info: Server
     case "net":
       return (
         <div className="space-y-1">
-          <p className="font-cond text-xl font-semibold leading-none sm:text-2xl">
-            <span className="text-sm font-medium text-muted">In </span>
-            <AnimatedNumber value={(v.in ?? 0) / 1000} digits={2} /> <span className="text-base text-muted">Mbit/s</span>
+          <p className="whitespace-nowrap font-cond text-[clamp(1rem,10cqi,1.5rem)] font-semibold leading-none tabular-nums">
+            <span className="text-[0.6em] font-medium text-muted">In </span>
+            <AnimatedNumber value={(v.in ?? 0) / 1000} digits={(v.in ?? 0) >= 100_000 ? 1 : 2} /> <span className="text-[0.6em] text-muted">Mbit/s</span>
           </p>
-          <p className="font-cond text-xl font-semibold leading-none sm:text-2xl">
-            <span className="text-sm font-medium text-muted">Out </span>
-            <AnimatedNumber value={(v.out ?? 0) / 1000} digits={2} /> <span className="text-base text-muted">Mbit/s</span>
+          <p className="whitespace-nowrap font-cond text-[clamp(1rem,10cqi,1.5rem)] font-semibold leading-none tabular-nums">
+            <span className="text-[0.6em] font-medium text-muted">Out </span>
+            <AnimatedNumber value={(v.out ?? 0) / 1000} digits={(v.out ?? 0) >= 100_000 ? 1 : 2} /> <span className="text-[0.6em] text-muted">Mbit/s</span>
           </p>
         </div>
       );
@@ -171,12 +172,12 @@ const KpiTile = memo(function KpiTile({ m, v, pts, info }: { m: Metric; v: Dims 
     <Link
       href={`/history?range=24h#${m}`}
       prefetch
-      className="group flex flex-col justify-between gap-3 rounded-xl border border-line bg-surface p-4 transition-colors hover:border-signal"
+      className="group @container flex min-w-0 flex-col justify-between gap-3 rounded-xl border border-line bg-surface p-4 transition-colors hover:border-signal"
     >
       <span className="sr-only">Open 24-hour history.</span>
-      <header className="flex items-baseline justify-between gap-2">
-        <h2 className="text-sm font-medium text-muted group-hover:text-ink">{m === "disk" ? "Disk" : DEFS[m].label}</h2>
-        {LEVEL_TEXT[lv] && <span className={`text-xs font-semibold ${LEVEL_CLASS[lv]}`}>{LEVEL_TEXT[lv]}</span>}
+      <header className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-2">
+        <h2 className="truncate text-sm font-medium text-muted group-hover:text-ink">{m === "disk" ? "Disk" : DEFS[m].label}</h2>
+        {LEVEL_TEXT[lv] && <span className={`shrink-0 text-xs font-semibold ${LEVEL_CLASS[lv]}`}>{LEVEL_TEXT[lv]}</span>}
       </header>
       <KpiValue m={m} v={v} info={info} />
       <LiveChart
@@ -340,7 +341,7 @@ export function LiveView() {
         })}
       </section>
 
-      <section aria-label="Last 5 minutes" className="grid gap-3 md:grid-cols-2 2xl:grid-cols-4">
+      <section aria-label="Last 5 minutes" className="grid grid-cols-1 gap-3 md:grid-cols-2 2xl:grid-cols-4">
         {CHARTED.map((m) => {
           const series = CHART_SERIES[m]!;
           return (

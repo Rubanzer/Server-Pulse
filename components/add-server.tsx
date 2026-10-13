@@ -223,11 +223,11 @@ function Check({ done, active, label }: { done: boolean; active: boolean; label:
     <li className="flex items-center gap-2">
       <span
         aria-hidden
-        className={`grid size-5 place-items-center rounded-full text-[11px] ${done ? "bg-ok text-on-signal" : active ? "border-2 border-signal" : "border border-line"}`}
+        className={`grid size-5 shrink-0 place-items-center rounded-full text-[0.6875rem] ${done ? "bg-ok text-on-signal" : active ? "border-2 border-signal" : "border border-line"}`}
       >
         {done ? "✓" : active ? <span className="size-1.5 animate-ping rounded-full bg-signal" /> : ""}
       </span>
-      <span className={done ? "font-medium" : active ? "" : "text-muted"}>{label}</span>
+      <span className={`min-w-0 break-all ${done ? "font-medium" : active ? "" : "text-muted"}`}>{label}</span>
       <span className="sr-only">{done ? "(done)" : active ? "(in progress)" : "(not started)"}</span>
     </li>
   );

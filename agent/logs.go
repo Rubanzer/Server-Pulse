@@ -26,6 +26,8 @@ type LogEntry struct {
 	Prio   int    `json:"p"` // 0 emerg … 7 debug
 	Unit   string `json:"u"`
 	Msg    string `json:"m"`
+	Hold   int64  `json:"hold,omitempty"` // this line repeated 5× in a minute: copies are held back for this many seconds
+	Held   int    `json:"held,omitempty"` // copies held back before this one
 }
 
 var (
@@ -126,9 +128,11 @@ func parseJournalLine(b []byte) (LogEntry, bool) {
 }
 
 type logFilter struct {
-	Since, Until int64  // unix seconds; 0 = open
-	Prio         int    // show this level and more severe (0–7)
-	Unit         string // optional systemd unit / identifier
+	Since, Until int64    // unix seconds; 0 = open
+	Prio         int      // show this level and more severe (0–7)
+	Unit         string   // optional systemd unit / identifier
+	Exclude      []string // units / identifiers to leave out (a noisy service)
+	Quiet        bool     // hold back a line repeating 5× in a minute, for 10 minutes
 }
 
 func parseFilter(q map[string][]string) (logFilter, error) {
@@ -158,6 +162,18 @@ func parseFilter(q map[string][]string) (logFilter, error) {
 			*p.dst = n
 		}
 	}
+	if v := first(q["exclude"]); v != "" {
+		for _, u := range strings.Split(v, ",") {
+			if u = strings.TrimSpace(u); u == "" {
+				continue
+			}
+			if !unitRe.MatchString(u) || len(f.Exclude) >= 20 {
+				return f, errors.New("invalid service to hide")
+			}
+			f.Exclude = append(f.Exclude, u)
+		}
+	}
+	f.Quiet = first(q["quiet"]) == "1"
 	if f.Since > 0 && f.Until > 0 && f.Until <= f.Since {
 		return f, errors.New("until must be after since")
 	}
@@ -300,6 +316,79 @@ func followFrom(ctx context.Context, f logFilter, backlog int, cursor string, em
 		cmd.Process.Kill()
 	}
 	return nil
+}
+
+// ---------- repeat hold ----------
+
+const (
+	holdAfter  = 5   // copies of the same line…
+	holdWithin = 60  // …within this many seconds…
+	holdFor    = 600 // …hold further copies back for this long
+)
+
+type repeat struct {
+	times     []int64 // recent copies (seconds), only the last minute
+	heldUntil int64
+	held      int
+}
+
+// quieter applies a viewer's "hide this service" list and the repeat hold to a stream of lines.
+// One per viewer / request; memory is bounded (at most 5,000 distinct lines tracked).
+type quieter struct {
+	exclude map[string]bool
+	quiet   bool
+	seen    map[string]*repeat
+}
+
+func newQuieter(f logFilter) *quieter {
+	q := &quieter{exclude: map[string]bool{}, quiet: f.Quiet, seen: map[string]*repeat{}}
+	for _, u := range f.Exclude {
+		q.exclude[u] = true
+	}
+	return q
+}
+
+// keep reports whether the line is shown; it marks the copy that starts a hold (Hold) and the first
+// copy after one (Held = how many were held back).
+func (q *quieter) keep(e *LogEntry) bool {
+	if q.exclude[e.Unit] {
+		return false
+	}
+	if !q.quiet {
+		return true
+	}
+	t := e.T / 1000
+	k := eventKey(e.Unit, e.Msg) // digits ignored: "worker 123 exited" and "worker 456 exited" are one line
+	r := q.seen[k]
+	if r == nil {
+		if len(q.seen) >= 5000 {
+			for key, x := range q.seen {
+				if x.heldUntil <= t && (len(x.times) == 0 || x.times[len(x.times)-1] < t-holdWithin) {
+					delete(q.seen, key)
+				}
+			}
+		}
+		r = &repeat{}
+		q.seen[k] = r
+	}
+	if t < r.heldUntil {
+		r.held++
+		return false
+	}
+	if r.held > 0 {
+		e.Held, r.held = r.held, 0
+	}
+	recent := r.times[:0]
+	for _, x := range r.times {
+		if x > t-holdWithin {
+			recent = append(recent, x)
+		}
+	}
+	r.times = append(recent, t)
+	if len(r.times) >= holdAfter {
+		r.heldUntil, r.times, e.Hold = t+holdFor, nil, holdFor
+	}
+	return true
 }
 
 // ---------- failures ----------

@@ -36,7 +36,7 @@ export default async function RootLayout({ children }: { children: React.ReactNo
       </head>
       <body className="min-h-dvh antialiased">
         <Nav role={s?.role ?? null} email={s?.email ?? null} />
-        <main className="mx-auto w-full max-w-6xl px-4 pb-[max(4rem,env(safe-area-inset-bottom))] pt-4 sm:px-6 2xl:max-w-[1600px]">
+        <main className="mx-auto w-full max-w-6xl min-w-0 px-4 pb-[max(4rem,env(safe-area-inset-bottom))] pt-4 sm:px-6 2xl:max-w-[100rem]">
           {children}
         </main>
         {s?.role === "owner" && <BackfillRunner />}

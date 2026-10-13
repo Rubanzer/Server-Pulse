@@ -457,7 +457,11 @@ func (h *Hub) ServeLogs(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}()
+	q := newQuieter(f)
 	err = followLogs(ctx, f, 200, func(e LogEntry) bool {
+		if !q.keep(&e) {
+			return true // hidden service or a held repeat: nothing to send
+		}
 		b, _ := json.Marshal(e)
 		return send(append(b, '\n'))
 	})

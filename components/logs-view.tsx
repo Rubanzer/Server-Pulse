@@ -6,7 +6,8 @@ import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useSta
 import { RingBuffer } from "@/lib/algo";
 import { fmtWindow, TimeRange } from "./time-range";
 
-type Line = { c: string; t: number; p: number; u: string; m: string };
+/** hold: this line repeated 5× in a minute, copies are held back for `hold` s; held: copies held back before it */
+type Line = { c: string; t: number; p: number; u: string; m: string; hold?: number; held?: number };
 type Failure = {
   id: number;
   ts: number;
@@ -20,6 +21,8 @@ type Failure = {
 type Conn = "connecting" | "live" | "polling" | "paused" | "reconnecting" | "unsupported";
 
 const MAX_LINES = 2000;
+const HIDDEN_KEY = "sp-logs-hidden";
+const QUIET_KEY = "sp-logs-quiet";
 const MAX_RANGE_LINES = 20_000;
 const LOG_PRESETS = [
   { key: "live", label: "Live", sec: 0 },
@@ -135,7 +138,7 @@ export function LogsView() {
 
 // ---------- live logs ----------
 
-function useLogStream(prio: number, unit: string, paused: boolean, enabled: boolean) {
+function useLogStream(prio: number, unit: string, paused: boolean, enabled: boolean, extra: string) {
   const [lines, setLines] = useState<Line[]>([]);
   const [conn, setConn] = useState<Conn>("connecting");
   const [note, setNote] = useState<string | null>(null);
@@ -194,6 +197,7 @@ function useLogStream(prio: number, unit: string, paused: boolean, enabled: bool
         }, 100);
     };
     const qs = new URLSearchParams({ prio: String(prio) });
+    for (const [k, v] of new URLSearchParams(extra)) qs.set(k, v);
     if (unit) qs.set("unit", unit);
 
     async function stream(): Promise<"ended" | "fallback"> {
@@ -287,7 +291,7 @@ function useLogStream(prio: number, unit: string, paused: boolean, enabled: bool
       ctrl?.abort();
       clearTimeout(flushTimer);
     };
-  }, [prio, unit, clear, publish, enabled]);
+  }, [prio, unit, clear, publish, enabled, extra]);
 
   return { lines, conn, note, held, clear };
 }
@@ -295,7 +299,7 @@ function useLogStream(prio: number, unit: string, paused: boolean, enabled: bool
 type RangeState = "loading" | "more" | "done" | "error" | "unsupported";
 
 /** A past window of the log, oldest first, 500 lines a page. */
-function useLogRange(prio: number, unit: string, from: number, to: number) {
+function useLogRange(prio: number, unit: string, from: number, to: number, extra: string) {
   const [lines, setLines] = useState<Line[]>([]);
   const [state, setState] = useState<RangeState>("loading");
   const [note, setNote] = useState<string | null>(null);
@@ -311,6 +315,7 @@ function useLogRange(prio: number, unit: string, from: number, to: number) {
         prio: String(prio),
         since: String(from),
       });
+      for (const [k, v] of new URLSearchParams(extra)) p.set(k, v);
       if (to) p.set("until", String(to));
       if (unit) p.set("unit", unit);
       if (!reset && cursor.current) p.set("after", cursor.current);
@@ -339,7 +344,7 @@ function useLogRange(prio: number, unit: string, from: number, to: number) {
         setNote((e as Error).message);
       }
     },
-    [prio, unit, from, to],
+    [prio, unit, from, to, extra],
   );
 
   useEffect(() => {
@@ -364,8 +369,32 @@ function LiveLogs({ start }: { start: Jump | null }) {
   const [win, setWin] = useState<Win>(() => (start ? { preset: null, from: start.from, to: start.to || nowSec() } : { preset: "live", from: 0, to: 0 }));
   const live = win.preset === "live";
   const prio = LEVELS.find((l) => l.key === level)!.prio;
-  const stream = useLogStream(prio, unit, paused, live);
-  const range = useLogRange(prio, unit, live ? 0 : win.from, win.to);
+  // services hidden from the log and the repeat hold: remembered on this device. Read after mount, so
+  // the server-rendered page and the first client render agree.
+  const [hidden, setHidden] = useState<string[]>([]);
+  const [quiet, setQuiet] = useState(true);
+  const loaded = useRef(false);
+  useEffect(() => {
+    queueMicrotask(() => {
+      try {
+        const v = JSON.parse(localStorage.getItem(HIDDEN_KEY) ?? "[]");
+        if (Array.isArray(v)) setHidden(v.filter((x): x is string => typeof x === "string" && UNIT_RE.test(x)).slice(0, 20));
+        setQuiet(localStorage.getItem(QUIET_KEY) !== "0");
+      } catch {}
+      loaded.current = true;
+    });
+  }, []);
+  useEffect(() => {
+    if (!loaded.current) return;
+    try {
+      localStorage.setItem(HIDDEN_KEY, JSON.stringify(hidden));
+      localStorage.setItem(QUIET_KEY, quiet ? "1" : "0");
+    } catch {}
+  }, [hidden, quiet]);
+  const hideUnit = useCallback((u: string) => setHidden((h) => (h.includes(u) || h.length >= 20 ? h : [...h, u])), []);
+  const extra = useMemo(() => new URLSearchParams({ ...(hidden.length ? { exclude: hidden.join(",") } : {}), ...(quiet ? { quiet: "1" } : {}) }).toString(), [hidden, quiet]);
+  const stream = useLogStream(prio, unit, paused, live, extra);
+  const range = useLogRange(prio, unit, live ? 0 : win.from, win.to, extra);
   const { held, clear } = stream;
   const lines = live ? stream.lines : range.lines;
   const conn = stream.conn;
@@ -380,10 +409,10 @@ function LiveLogs({ start }: { start: Jump | null }) {
   const units = useMemo(() => [...new Set(lines.map((l) => l.u).filter(Boolean))].sort().slice(0, 50), [lines]);
   // typing stays responsive: the filter over up to 20,000 lines runs on the deferred value, after the keystroke paints
   const needle = useDeferredValue(q).trim().toLowerCase();
-  const shown = useMemo(
-    () => (needle ? lines.filter((l) => l.m.toLowerCase().includes(needle) || l.u.toLowerCase().includes(needle)) : lines),
-    [lines, needle],
-  );
+  const shown = useMemo(() => {
+    const hide = new Set(hidden); // agents before 1.3.2 don't apply "exclude": hide those lines here too
+    return lines.filter((l) => !hide.has(l.u) && (!needle || l.m.toLowerCase().includes(needle) || l.u.toLowerCase().includes(needle)));
+  }, [lines, needle, hidden]);
 
   // stick to the bottom unless the reader scrolled up
   const box = useRef<HTMLDivElement>(null);
@@ -448,7 +477,7 @@ function LiveLogs({ start }: { start: Jump | null }) {
             list="log-units"
             placeholder="Service (e.g. nginx.service)"
             aria-label="Filter by service"
-            className="w-52 rounded-lg border border-line bg-paper px-2.5 py-1 text-sm"
+            className="min-w-0 flex-1 basis-40 rounded-lg border border-line bg-paper px-2.5 py-1 text-sm sm:w-52 sm:flex-none"
           />
           <datalist id="log-units">
             {units.map((u) => (
@@ -461,10 +490,14 @@ function LiveLogs({ start }: { start: Jump | null }) {
             onChange={(e) => setQ(e.target.value)}
             placeholder="Search"
             aria-label="Search log lines"
-            className="w-40 rounded-lg border border-line bg-paper px-2.5 py-1 text-sm"
+            className="min-w-0 flex-1 basis-32 rounded-lg border border-line bg-paper px-2.5 py-1 text-sm sm:w-40 sm:flex-none"
           />
+          <label className="flex items-center gap-1.5 text-xs text-muted" title="A line that repeats 5 times in a minute is held back for 10 minutes">
+            <input type="checkbox" checked={quiet} onChange={(e) => setQuiet(e.target.checked)} className="accent-[var(--color-signal)]" />
+            Hold repeats
+          </label>
           {live ? (
-            <div className="ml-auto flex items-center gap-2">
+            <div className="ml-auto flex flex-wrap items-center gap-2">
               <ConnBadge conn={conn} paused={paused} />
               <button onClick={() => setPaused((p) => !p)} className="rounded-lg border border-line px-3 py-1 text-sm hover:border-signal">
                 {paused ? `Resume${held ? ` (${held})` : ""}` : "Pause"}
@@ -481,6 +514,23 @@ function LiveLogs({ start }: { start: Jump | null }) {
             </span>
           )}
         </div>
+        {hidden.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5 border-b border-line px-3 py-2 text-xs">
+            <span className="text-muted">Hidden:</span>
+            {hidden.map((u) => (
+              <button
+                key={u}
+                onClick={() => setHidden((h) => h.filter((x) => x !== u))}
+                className="inline-flex max-w-full items-center gap-1 rounded-full border border-line px-2 py-0.5 hover:border-signal"
+                title={`Show ${u} again`}
+              >
+                <span className="truncate font-mono">{u}</span>
+                <span aria-hidden>×</span>
+                <span className="sr-only">show again</span>
+              </button>
+            ))}
+          </div>
+        )}
         {note && <p className="border-b border-line bg-paper px-3 py-2 text-sm text-warn">{note}</p>}
         <div className="relative">
           <div
@@ -508,7 +558,7 @@ function LiveLogs({ start }: { start: Jump | null }) {
                       : "Waiting for new log lines…"}
               </p>
             ) : (
-              shown.map((l) => <LogRow key={l.c} l={l} />)
+              shown.map((l) => <LogRow key={l.c} l={l} onHide={hideUnit} />)
             )}
             {!live && range.state === "more" && lines.length < MAX_RANGE_LINES && (
               <div className="border-t border-line p-3 text-center font-sans">
@@ -550,21 +600,30 @@ const todayStart = () => {
   return todayCache.start;
 };
 
-const LogRow = memo(function LogRow({ l }: { l: Line }) {
+const unitLabel = (u: string) => u.replace(/\.service$/, "");
+
+const LogRow = memo(function LogRow({ l, onHide }: { l: Line; onHide: (u: string) => void }) {
   const d = new Date(l.t);
+  const unit = l.u ? (
+    <button onClick={() => onHide(l.u)} className="truncate text-left text-signal hover:line-through" title={`${l.u}: click to hide this service`}>
+      {unitLabel(l.u)}
+    </button>
+  ) : null;
   return (
-    <div className="grid grid-cols-[auto_auto_minmax(0,1fr)] gap-x-2 border-b border-line/50 px-3 py-0.5 [content-visibility:auto] [contain-intrinsic-size:auto_22px] hover:bg-paper sm:grid-cols-[auto_auto_12rem_minmax(0,1fr)]">
-      <time className="text-muted tabular-nums" dateTime={d.toISOString()} title={FULL_FMT.format(d)}>
+    <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 border-b border-line/50 px-3 py-0.5 [content-visibility:auto] [contain-intrinsic-size:auto_22px] hover:bg-paper sm:grid-cols-[auto_auto_11rem_minmax(0,1fr)]">
+      <time className="whitespace-nowrap text-muted tabular-nums" dateTime={d.toISOString()} title={FULL_FMT.format(d)}>
         {l.t >= todayStart() ? "" : `${DAY_FMT.format(d)} `}
         {TIME_FMT.format(d)}
       </time>
-      <span className={`self-start rounded px-1 text-[10px] font-semibold leading-5 ${prioClass(l.p)}`}>{PRIO_NAME[l.p] ?? l.p}</span>
-      <span className="hidden truncate text-signal sm:block" title={l.u}>
-        {l.u}
-      </span>
-      <span className="whitespace-pre-wrap break-words">
-        <span className="text-signal sm:hidden">{l.u} </span>
+      <span className={`self-start justify-self-start rounded px-1 text-[0.625rem] font-semibold leading-5 ${prioClass(l.p)}`}>{PRIO_NAME[l.p] ?? l.p}</span>
+      <span className="hidden min-w-0 sm:flex">{unit}</span>
+      <span className="col-span-2 whitespace-pre-wrap break-words sm:col-span-1">
+        <span className="mr-1 inline-flex max-w-full sm:hidden">{unit}</span>
         {l.m}
+        {l.held ? <span className="ml-2 rounded bg-paper px-1 font-sans text-[11px] text-muted">+{l.held.toLocaleString()} repeats held back</span> : null}
+        {l.hold ? (
+          <span className="ml-2 rounded bg-paper px-1 font-sans text-[11px] text-warn">repeating 5× a minute: holding copies for {Math.round(l.hold / 60)} min</span>
+        ) : null}
       </span>
     </div>
   );

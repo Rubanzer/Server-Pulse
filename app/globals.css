@@ -51,7 +51,35 @@ body {
   color: var(--color-ink);
   font-family: var(--font-sans);
   font-feature-settings: "tnum" 1;
-  overflow-x: hidden;
+  /* clip, not hidden: no scroll container (sticky header keeps working); real overflow is fixed at the source */
+  overflow-x: clip;
+  /* long URLs and error text break inside their box instead of running past it */
+  overflow-wrap: break-word;
+}
+
+/* big displays (a TV at 100% scaling is 3840 CSS px): scale everything up with the root size, so text
+   stays readable across a room and the layout keeps its proportions; all sizes are rem-based */
+@media (min-width: 2200px) {
+  html {
+    font-size: 112.5%;
+  }
+}
+@media (min-width: 3000px) {
+  html {
+    font-size: 137.5%;
+  }
+}
+
+/* phones and touch screens: every control is at least 40 px tall */
+@media (pointer: coarse) {
+  button,
+  [role="radio"],
+  [role="tab"],
+  summary,
+  select,
+  input:not([type="checkbox"]):not([type="radio"]) {
+    min-height: 2.5rem;
+  }
 }
 
 :focus-visible {

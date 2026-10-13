@@ -125,16 +125,16 @@ export function HistoryView({ owner = false }: { owner?: boolean }) {
           )}
         </div>
         {owner && (
-          <nav aria-label="Same time elsewhere" className="flex gap-2 text-sm">
+          <nav aria-label="Same time elsewhere" className="flex flex-wrap gap-2 text-sm">
             <Link
               href={`/logs?${new URLSearchParams({ from: String(from), to: String(to) })}`}
-              className="rounded-lg border border-line px-3 py-1.5 hover:border-signal"
+              className="whitespace-nowrap rounded-lg border border-line px-3 py-1.5 hover:border-signal"
             >
               Logs for this time
             </Link>
             <Link
               href={`/logs?${new URLSearchParams({ from: String(from), to: String(to) })}#failures`}
-              className="rounded-lg border border-line px-3 py-1.5 hover:border-signal"
+              className="whitespace-nowrap rounded-lg border border-line px-3 py-1.5 hover:border-signal"
             >
               Failures for this time
             </Link>
@@ -154,7 +154,7 @@ export function HistoryView({ owner = false }: { owner?: boolean }) {
         onRange={zoom}
       />
 
-      <div className="grid gap-3 lg:grid-cols-2 2xl:grid-cols-3" aria-busy={loading}>
+      <div className="grid grid-cols-1 gap-3 lg:grid-cols-2 2xl:grid-cols-3" aria-busy={loading}>
         {METRICS.map((m) => (
           <HistoryCard key={m} m={m} r={shown?.all[m]} stale={loading && !!shown} onZoom={zoom} from={from} to={to} />
         ))}
@@ -189,7 +189,7 @@ const HistoryCard = memo(function HistoryCard({
     return s && Number.isFinite(peak) ? { ...s, peak: Math.max(s.peak, peak) } : s;
   }, [pts, first.key]);
   return (
-    <article id={m} className="scroll-mt-28 rounded-xl border border-line bg-surface p-4">
+    <article id={m} className="min-w-0 scroll-mt-28 rounded-xl border border-line bg-surface p-4">
       <header className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
         <h2 className="font-medium">{DEFS[m].label}</h2>
         <div className="flex items-center gap-3 text-xs text-muted">
