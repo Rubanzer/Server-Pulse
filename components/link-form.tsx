@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import type { ServerInfo } from "@/lib/netdata";
+import { composeLink, explainPaste } from "@/lib/paste-guard";
 
 type Test = { ok: boolean; ms?: number; error?: string; info?: ServerInfo };
 
@@ -11,23 +12,33 @@ async function json<T>(url: string, init: RequestInit): Promise<T> {
   return (await r.json().catch(() => ({ ok: false, error: `Request failed (${r.status})` }))) as T;
 }
 
+const field = "w-full rounded-lg border border-line bg-surface px-3 py-2.5 font-mono text-base sm:text-sm";
+
 /**
- * Paste a server link (ngrok, Tailscale Funnel or any HTTPS host), test it, save it. Data starts flowing
- * right away. Used by /connect and Settings.
+ * Connect a server by hand: address + username + password (or one full link). Tests, then saves; data
+ * flows right away. Used by Add server ("connect manually") and Settings.
  */
 export function LinkForm({ submitLabel = "Test and connect", onSaved, disabled }: { submitLabel?: string; onSaved: () => void; disabled?: boolean }) {
-  const [url, setUrl] = useState("");
+  const [mode, setMode] = useState<"fields" | "link">("fields");
+  const [address, setAddress] = useState("");
+  const [user, setUser] = useState("dashboard");
+  const [pass, setPass] = useState("");
+  const [link, setLink] = useState("");
   const [show, setShow] = useState(false);
   const [busy, setBusy] = useState<"test" | "save" | null>(null);
   const [test, setTest] = useState<Test | null>(null);
   const [error, setError] = useState<string | null>(null);
+
+  const url = mode === "fields" ? (address && pass ? composeLink(address, user, pass) : "") : link.trim();
+  const hint = explainPaste(mode === "fields" ? `${address} ${pass}` : link);
 
   async function save() {
     setBusy("save");
     const r = await json<{ ok?: boolean; error?: string }>("/api/settings/link", { method: "POST", body: JSON.stringify({ url }) });
     setBusy(null);
     if (r.ok) {
-      setUrl("");
+      setLink("");
+      setPass("");
       setTest(null);
       onSaved();
     } else setError(r.error ?? "Could not save the link");
@@ -37,6 +48,7 @@ export function LinkForm({ submitLabel = "Test and connect", onSaved, disabled }
     e.preventDefault();
     setError(null);
     setTest(null);
+    if (hint) return setError(hint);
     setBusy("test");
     const t = await json<Test>("/api/settings/test", { method: "POST", body: JSON.stringify({ url }) });
     setBusy(null);
@@ -46,39 +58,86 @@ export function LinkForm({ submitLabel = "Test and connect", onSaved, disabled }
 
   return (
     <form onSubmit={submit} className="space-y-3">
-      <label className="block" htmlFor="server-link">
-        <span className="text-sm font-medium">Server link</span>
-        <span className="block break-all text-xs text-muted">
-          Looks like https://dashboard:PASSWORD@your-name.ngrok-free.app or https://dashboard:PASSWORD@machine.tailnet.ts.net
-        </span>
-      </label>
-      <div className="flex flex-col gap-2 sm:flex-row">
-        <div className="relative min-w-0 flex-1">
-          <input
-            id="server-link"
-            value={url}
-            onChange={(e) => setUrl(e.target.value)}
-            type={show ? "text" : "password"}
-            autoComplete="off"
-            spellCheck={false}
-            required
-            disabled={disabled}
-            placeholder="https://dashboard:PASSWORD@host"
-            className="w-full rounded-lg border border-line bg-surface py-2.5 pl-3 pr-16 font-mono text-base sm:text-sm"
-          />
+      <div role="tablist" aria-label="How to enter it" className="inline-flex rounded-lg border border-line p-0.5 text-xs">
+        {(
+          [
+            ["fields", "Address and password"],
+            ["link", "One full link"],
+          ] as const
+        ).map(([k, l]) => (
           <button
+            key={k}
             type="button"
-            onClick={() => setShow((s) => !s)}
-            className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded px-2 py-1 text-xs text-muted hover:text-ink"
-            aria-label={show ? "Hide link" : "Show link"}
+            role="tab"
+            aria-selected={mode === k}
+            onClick={() => setMode(k)}
+            className={`rounded-md px-2.5 py-1 ${mode === k ? "bg-signal text-on-signal" : "text-muted hover:text-ink"}`}
           >
-            {show ? "Hide" : "Show"}
+            {l}
           </button>
-        </div>
-        <button disabled={!!busy || disabled || !url} className="shrink-0 rounded-lg bg-signal px-4 py-2.5 text-sm font-medium text-on-signal disabled:opacity-50">
-          {busy === "test" ? "Testing…" : busy === "save" ? "Saving…" : submitLabel}
-        </button>
+        ))}
       </div>
+
+      {mode === "fields" ? (
+        <div className="grid gap-3 sm:grid-cols-[2fr_1fr_1.5fr]">
+          <label className="block min-w-0">
+            <span className="text-sm font-medium">Address</span>
+            <input value={address} onChange={(e) => setAddress(e.target.value)} placeholder="your-name.ngrok-free.dev" autoComplete="off" spellCheck={false} required disabled={disabled} className={`mt-1 ${field}`} />
+          </label>
+          <label className="block min-w-0">
+            <span className="text-sm font-medium">Username</span>
+            <input value={user} onChange={(e) => setUser(e.target.value)} autoComplete="off" spellCheck={false} disabled={disabled} className={`mt-1 ${field}`} />
+          </label>
+          <label className="block min-w-0">
+            <span className="text-sm font-medium">Agent password</span>
+            <div className="relative mt-1">
+              <input
+                value={pass}
+                onChange={(e) => setPass(e.target.value)}
+                type={show ? "text" : "password"}
+                autoComplete="off"
+                required
+                disabled={disabled}
+                className={`${field} pr-14`}
+              />
+              <button type="button" onClick={() => setShow((s) => !s)} className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded px-2 py-1 text-xs text-muted hover:text-ink">
+                {show ? "Hide" : "Show"}
+              </button>
+            </div>
+          </label>
+          <p className="text-xs text-muted sm:col-span-3">
+            On the server, <code className="font-mono">sudo server-pulse-agent link</code> shows the address and password. This is the agent&apos;s password, not a btop or ngrok login.
+          </p>
+        </div>
+      ) : (
+        <label className="block">
+          <span className="text-sm font-medium">Server link</span>
+          <span className="block break-all text-xs text-muted">Looks like https://dashboard:PASSWORD@your-name.ngrok-free.dev/history</span>
+          <div className="relative mt-1">
+            <input
+              value={link}
+              onChange={(e) => setLink(e.target.value)}
+              type={show ? "text" : "password"}
+              autoComplete="off"
+              spellCheck={false}
+              required
+              disabled={disabled}
+              placeholder="https://dashboard:PASSWORD@host"
+              className={`${field} pr-14`}
+            />
+            <button type="button" onClick={() => setShow((s) => !s)} className="absolute right-1.5 top-1/2 -translate-y-1/2 rounded px-2 py-1 text-xs text-muted hover:text-ink">
+              {show ? "Hide" : "Show"}
+            </button>
+          </div>
+        </label>
+      )}
+
+      {hint && <p className="rounded-lg border border-warn/50 bg-surface p-3 text-sm text-warn">{hint}</p>}
+
+      <button disabled={!!busy || disabled || !url} className="rounded-lg bg-signal px-4 py-2.5 text-sm font-medium text-on-signal disabled:opacity-50">
+        {busy === "test" ? "Testing…" : busy === "save" ? "Saving…" : submitLabel}
+      </button>
+
       <div aria-live="polite" className="text-sm">
         {test?.ok && (
           <p className="text-ok">
@@ -88,11 +147,7 @@ export function LinkForm({ submitLabel = "Test and connect", onSaved, disabled }
         )}
         {test && !test.ok && (
           <div className="space-y-2 rounded-lg border border-crit/40 bg-surface p-3">
-            <p className="text-crit">Connection failed: {test.error}</p>
-            <p className="text-xs text-muted">
-              Check that the tunnel is running and the user and password match the dashboard user from setup step 3. You can
-              still save the link and fix the server afterwards.
-            </p>
+            <p className="text-crit">{test.error}</p>
             <button type="button" onClick={save} disabled={!!busy} className="rounded-md border border-line px-3 py-1.5 text-sm hover:border-signal">
               Save anyway
             </button>

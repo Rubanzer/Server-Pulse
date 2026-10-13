@@ -389,3 +389,93 @@ Recharts is now loaded only by the History page.
 | Tailscale machine keys expire after ~180 days by default, silently breaking the Funnel link | The setup guide's Tailscale step shows a "Needed for 24/7" callout to disable key expiry, with a check command; the downloadable script reminds you at the end; README + troubleshooting updated |
 | A laptop or desktop that sleeps drops the tunnel and stops recording | New setup step "Keep the machine awake 24/7": masks sleep / suspend / hibernate targets and ignores the lid switch (logind drop-in, applied at the next reboot so a desktop session isn't killed). Included in the one-file script; undone by the uninstall block |
 | Unclear what "24/7" means on ngrok | Documented: the tunnel itself is always up (systemd, free static domain); only the dashboard's live view is rationed by budget mode |
+
+### Update: one-file server agent (`agent/`)
+
+Requested: "a single file I start on Ubuntu that runs 24/7 in the background and publishes the analytics through Tailscale for the Vercel app to fetch".
+
+| Decision | Choice | Why |
+| --- | --- | --- |
+| Data flow | **Pull**: the agent serves the stats, the dashboard fetches them | Live every 2 s and $0. Push would need hosted storage written every few seconds (Neon free compute can't stay awake 24/7) |
+| Language / packaging | **Go**, one static binary per arch (linux amd64, arm64; ~22 MB) | No runtime or dependencies on the server |
+| Public link | **Embedded Tailscale (`tsnet`) + Funnel** | No separate Tailscale install, no open ports; stable `https://<name>.<tailnet>.ts.net` |
+| API | **Netdata-compatible subset** (`info`, `allmetrics` incl. `filter`, `data`, `charts`) at `/api/v1` and `/history/api/v1` | The existing dashboard works unchanged (verified) |
+| Metrics | Read directly from `/proc` and `/sys` every second; physical disks and NICs only | Replaces Netdata for the 8 charts the dashboard uses |
+| History | Two O(1) ring tiers: 1 s for 1 h, 1 min for 30 days (~9 MB); 30-day tier saved atomically every 5 min and on shutdown | Survives reboots; Netdata-style "30 days on the server" for the nightly sync and backfill |
+| Service | `install` sets up systemd: `Restart=always`, `DynamicUser`, `ProtectSystem=strict`, `NoNewPrivileges`, config passed via `LoadCredential`; keeps the machine awake | 24/7 with least privilege |
+| Releases | GitHub Actions builds, tests and attaches both binaries + `SHA256SUMS` to `agent-v*` tags | Download instead of build |
+
+**Verified:** unit tests (parsers against real `/proc` text, CPU % math, rate math, ring buckets and gaps, minute roll-up, save/load, API auth, Netdata shapes, NaN→null, filter, 404, read-only) on Linux. On a real Ubuntu 24.04 (WSL): the agent served live metrics, and the **unchanged dashboard** read it (live, 5-minute history, connection test). `install` created the hardened service (dynamic user, root-only config), it came back 5 s after `SIGKILL`, history was saved on stop, and `uninstall --purge` removed everything.
+
+**Not yet verified:** the Funnel connection itself (needs a Tailscale auth key from the owner's tailnet).
+
+The classic server kit (Netdata + Caddy + tunnel) remains supported; the agent is the simpler path.
+
+### Update: live server view (btop in the product) and "easy as possible" onboarding
+
+Two design councils (UX/data-viz, systems/free-tier, security/ops; then onboarding, install/connectivity, product simplicity) reviewed the plan before it was built.
+
+**Live server view (`/server`)**: per-core CPU heatmap (8×8 for 64 threads, Usage / Temperature toggle, absolute thermal thresholds, per-physical-core temps mapped through `core_id`), KPI tiles with 5-min sparklines, memory + swap, every real filesystem with usage and per-disk I/O, per-interface network, and a process table (top 25 by CPU, grouped by program, search, sort, order frozen while the pointer is over it). Streams **1 frame/s straight from the agent to the browser** (gzip NDJSON over `fetch`, 60-s single-use HMAC token in a header, CORS origin allow-list); falls back to a dashboard-side snapshot every 2 s when the browser can't reach the agent (e.g. ngrok's browser warning). Pauses 30 s after the tab is hidden, dims stale data, reconnects with backoff.
+
+**Agent v2**: `/api/v1/pulse` (snapshot) and `/api/v1/pulse/stream`; one sampler fanned out to ≤ 8 viewers (≤ 3 per IP), latest-frame-wins, 5-s write deadline, 15-min sessions; 5 bad tokens/min → 10-min block; process scan reads only `stat`/`statm`, only while someone watches; command lines hidden by default (opt-in `--show-args` with a tested scrubber); `/agent/status` answered only to local requests.
+
+**Pairing (no links, no passwords)**: *Add server* shows `curl -fsSL <dashboard>/install.sh | sudo bash -s -- CODE`. The code is 8 characters, valid 10 minutes, single use, stored only as a SHA-256. `install.sh` downloads the agent from GitHub Releases and **verifies its SHA-256** before running it. The agent installs itself, opens its Tailscale link (no auth key needed: it shows a Tailscale **login link** to approve the machine) or uses `--public-url` for ngrok, then registers its link with the dashboard. The link is tested before the code is spent; a single atomic `UPDATE` makes reuse impossible. The page follows along (Waiting → Connected → Live data) and opens the server view.
+
+**No dead ends**: sign-up without a database shows a 3-step *Finish setup*; login no longer explains "the password inside your server link"; manual connect has **Address / Username / Password** fields; pasting a Tailscale auth key, invite link, ngrok token or btop address gets a plain explanation; connection errors say what is actually answering (a different login such as ngrok `--basic-auth`, a web page such as btop, or an ngrok error code).
+
+**Decided not to do (yet)**: agent *push* to the dashboard (needs Upstash Redis + Vercel invocation budget, 30-s live start; planned as an option for servers that can't run a tunnel); removing the classic kit / env-var mode (kept, demoted to Advanced).
+
+**Verified**: 17 Go tests on Linux (tokens, replay, tamper, scrubber, `/proc/[pid]/stat` parsing, mount filter, hyperthread temp mapping, end-to-end gzip stream with CORS and bad-token rejection, status locality, pairing client); 31 JS tests (incl. paste guard, link composer); end-to-end on Ubuntu 24.04 (WSL) + embedded Postgres: wrong code refused, wrong password reported while the code stays usable, pairing succeeds once and only once, live data flows, stream token + fallback work; browser: `/server` streams at "Live · 1 s", 60 fps (worst frame 17.1 ms), 64-core demo in dark mode, no console errors.
+
+**Needs the owner**: make the GitHub repository public and push a tag `agent-v1.1.0` so the release workflow publishes the binaries the installer downloads.
+
+### Update: live logs and failure history (`/logs`), safer pairing
+
+**Live logs**: the *Logs* page (owner only) shows the server's system journal as it happens. Lines stream straight from the agent to the browser (`/api/v1/logs/stream`, gzip NDJSON, the same transport as the live server view) using a **logs-scoped** 60-s single-use token (`v2.logs.…`); a token minted for the live view cannot open the logs, and vice versa. When the browser can't reach the agent, the page polls the dashboard every 3 s with a journal cursor, so nothing is skipped. Filters: level (errors / warnings / info / everything), service (with suggestions from what has been seen), and text search. The view keeps the newest 2,000 lines, batches renders every 100 ms, follows the newest line unless you scroll up (then shows "N new lines · Jump to latest"), and can be paused without losing lines.
+
+**Failure history**: the agent watches the journal all the time (not only while someone looks) and records failures in `/var/lib/private/server-pulse/events.jsonl`:
+
+| Kind | Detected from | Severity |
+| --- | --- | --- |
+| Out of memory | kernel "Out of memory" / "oom-kill" | critical |
+| Disk | I/O errors, EXT4/XFS errors, read-only remounts | critical |
+| Crash | segfaults, core dumps, panics | error |
+| Service | systemd "Failed with result", "Failed to start" | error |
+| Log | any line at priority error or worse (critical/alert/emergency → critical) | error / critical |
+| CPU | ≥ 95 % for 5 min | warning |
+| Memory | ≥ 95 % for 2 min | error |
+| Disk space | ≥ 90 % for 1 min | warning |
+| Temperature | ≥ 90 °C for 1 min | critical |
+
+Thresholds use a hold time and 2-point hysteresis, so a value hovering at the limit makes one event, not hundreds. The same message (digits ignored) within 10 minutes increases a counter (×13) instead of adding rows; at most 60 new failures per minute are stored (flood guard). The dashboard adds what it sees itself: **server offline** (critical), **back online** (with how long it was down) and **history sync failed**. Every sync (and the page itself, at most every 30 s) copies new failures into Postgres (`events` table, idempotent key `<agent epoch>:<id>`, repeats update the count), so the history survives the server and is kept **180 days**. Without a database the page shows the agent's own copy.
+
+The *Failures* tab shows 24-h totals per severity, a severity filter, failures grouped by day with repeat counts, expandable full messages and "Load older".
+
+**Secrets never leave the server**: every log line passes a scrubber before it is sent or stored: passwords/tokens/API keys in `key=value` and `key: value` form, `Authorization: Bearer …`, credentials inside URLs (`postgres://user:pass@host` keeps the host), Tailscale, GitHub, AWS, Slack and `sk-…` keys. ANSI colour codes are stripped and lines are capped at 2,000 characters. Journal filters are validated (`unit` must match `^[A-Za-z0-9@:._-]{1,100}$`, level 0–7) and passed as separate arguments, never through a shell.
+
+**Agent**: the service joins the `systemd-journal` group (read-only journal access; nothing else changes). Up to 3 log viewers at once, 15-min sessions, the same bad-token blocking as the live view. Older agents keep working: the page explains that live logs need the newer agent and how to update it.
+
+**Safer pairing**: when a server redeems an *Add server* code, nothing is saved until the owner clicks **Approve and connect** on the "Is this your server?" card (name, address, agent version); **Reject** discards it. A leaked code can no longer silently attach someone else's server. Getting a pairing code now requires an account that can save a link.
+
+**Verified**: 26 Go tests on Linux (journal JSON with byte-array messages, unit attribution, scrubber leaks and over-scrubbing, classification, repeats/flood/persistence across restarts, threshold hold + hysteresis, filter injection, token scopes on every endpoint); lint, type check and JS tests; end to end on Ubuntu 24.04 (WSL) with the agent as a systemd service and embedded Postgres: an error written with `logger` appears on `/logs` within about a second with `token=•••` scrubbed, a failing test service shows up under *Failures* with its repeat count, stream → polling fallback works when the agent goes away, no horizontal scroll at 375 px.
+
+### Update: any time window, product review fixes
+
+**One time picker everywhere**: History, Logs and Failures share the same control: presets plus *From … to …* (`datetime-local`, viewer's time zone, inline error when the end is before the start).
+
+- **Logs**: *Live* (the streaming tail) or a past window (15 min, 1 h, 6 h, 24 h, 7 days or custom). A window reads oldest first, 500 lines a page with *Load the next 500 lines*, up to 20,000 lines; the level and service filters and search apply as in live mode, rows show the date when it isn't today. The agent serves windows with `journalctl --since/--until` and stops reading after n+1 lines, so a week of logs costs one page, not the whole week; continuing pages use the journal cursor (journalctl accepts only one of `--since` / `--after-cursor`). Agents older than 1.2 ignore `since`; the dashboard detects it (`range` missing) and explains instead of showing the wrong lines.
+- **Failures**: 24 h, 7 days, 30 days, *All (180 days)* or custom. A failure counts in a window when it was active in it (first seen before the end, last seen after the start). The four tiles count the whole window per severity (one `GROUP BY`, not the loaded page).
+- **Jump between views**: an opened failure offers *Logs around this time* (±5 min, filtered to its service) and *CPU, memory and disk at the time* (History ±30 min). History offers *Logs for this time* and *Failures for this time* (owner). `/logs?from=&to=&unit=` links work from anywhere.
+- **Live page**: a one-line notice when something critical or an error happened in the last 24 hours, with *View failures*.
+
+**Security review fixes** (independent review of the logs feature):
+- the scrubber now also removes JSON (`"password":"…"`), `--password value`, JWTs, `Authorization: Token|Digest …`, PEM private keys (header and base64 body lines), and `ASIA…`, `gho_/ghs_/github_pat_`, `sk_live_/rk_live_`, `AIza…` keys; hex hashes such as `sha256:` digests stay readable;
+- a line repeating 1,000×/s costs one disk write a minute (repeat counts are saved at most once a minute per failure), and the failures file is compacted by size, not only by count;
+- critical failures (OOM, disk errors, panics) have their own flood budget, so a chatty app can't crowd them out;
+- the log stream sends its headers at once and a heartbeat every 20 s: an idle filter shows *Live* immediately, and a dead connection frees its viewer slot;
+- the service joins only `systemd-journal` (not `adm`, which may not exist and grants all of `/var/log`); the watcher reads info level and above, not debug;
+- the dashboard keeps at most 20,000 failures per server; approve/reject is one conditional `UPDATE` (a double click can't both save and reject); older agents that answer unknown paths with a 200 page are recognised.
+
+**Product review fixes**: the Live page's empty state and demo banner point to *Add server* (the one command), not the classic kit; the setup guide no longer asks for a reboot or a service restart (the last step checks the services are enabled so they start with the machine); messages about older agents say to run the *Add server* command, which installs the latest agent over the old one and keeps history; the offline notice no longer claims Netdata on agent servers; the connection test says "version" instead of "Netdata"; failure day headers no longer slide under the sticky nav; the phone nav fades at the edge so it's clear it scrolls to Add server and Settings; the *Is this your server?* card moves focus to *Approve and connect*; source names for lines from login sessions show the program (`backup.sh`) instead of `session-4.scope`.
+
+**Verified**: 27 Go tests on Linux (incl. new scrubber cases, repeat write throttling and file size, critical flood budget, time-window argument validation); lint, type check, 31 JS tests, production build; end to end on Ubuntu 24.04 (WSL) + embedded Postgres: a 1-hour window loads 500 lines and *Load the next 500 lines* continues to 1,000; Failures 24 h tiles match the list; *Logs around this time* opens the right window filtered to the failure's source; History links carry the window; no horizontal scroll at 375 px; no console errors.

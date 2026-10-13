@@ -2,7 +2,6 @@ import { type NextRequest } from "next/server";
 import { z } from "zod";
 import { canSaveLink, guard } from "@/lib/auth";
 import { maskLink, parseServerLink } from "@/lib/config";
-import { ENV_SERVER } from "@/lib/db/schema";
 import { clearLink, saveLink } from "@/lib/settings";
 
 export const dynamic = "force-dynamic";
@@ -25,7 +24,7 @@ export async function POST(req: NextRequest) {
   if (!body.success) return Response.json({ error: "Paste a link" }, { status: 400 });
   try {
     const raw = body.data.url.trim();
-    const link = parseServerLink(raw, { sid: s.sid, trusted: s.sid === ENV_SERVER });
+    const link = parseServerLink(raw, { sid: s.sid, trusted: false });
     await saveLink(s.sid, raw);
     return Response.json({ ok: true, link: maskLink(link) });
   } catch (e) {

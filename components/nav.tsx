@@ -22,10 +22,16 @@ export function Nav({ role, email }: { role: Role | null; email: string | null }
   const links = role
     ? [
         { href: "/", label: "Live" },
+        { href: "/server", label: "Server" },
         { href: "/history", label: "History" },
         { href: "/reports", label: "Reports" },
-        ...(role === "owner" ? [{ href: "/settings", label: "Settings" }] : []),
-        { href: "/setup", label: "Server setup" },
+        ...(role === "owner"
+          ? [
+              { href: "/logs", label: "Logs" },
+              { href: "/connect", label: "Add server" },
+              { href: "/settings", label: "Settings" },
+            ]
+          : []),
       ]
     : [
         { href: "/login", label: "Log in" },
@@ -39,7 +45,10 @@ export function Nav({ role, email }: { role: Role | null; email: string | null }
   }
 
   const nav = (
-    <nav className="no-scrollbar -mx-1 flex items-center gap-1 overflow-x-auto text-sm" aria-label="Main">
+    <nav
+      className="no-scrollbar -mx-1 flex items-center gap-1 overflow-x-auto text-sm max-md:pr-6 max-md:[mask-image:linear-gradient(to_right,#000_calc(100%-2rem),transparent)]"
+      aria-label="Main"
+    >
       {links.map((l) => {
         const active = l.href === "/" ? path === "/" : path.startsWith(l.href);
         return (

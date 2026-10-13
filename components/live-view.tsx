@@ -255,15 +255,13 @@ export function LiveView() {
   if (data?.mode === "connect")
     return (
       <section className="mx-auto mt-[8vh] max-w-xl rounded-xl border border-line bg-surface p-6 text-center sm:p-8">
-        <h1 className="text-2xl font-semibold tracking-tight">Connect your server to start</h1>
-        <p className="mt-2 text-muted">Paste your server link and live vitals appear here within seconds.</p>
+        <h1 className="text-2xl font-semibold tracking-tight">Add your server to start</h1>
+        <p className="mt-2 text-muted">Copy one command to your Ubuntu server and live vitals appear here within seconds.</p>
         <div className="mt-6 flex flex-col justify-center gap-2 sm:flex-row">
           <Link href="/connect" prefetch className="rounded-lg bg-signal px-4 py-2.5 font-medium text-on-signal">
-            Connect server
+            Add server
           </Link>
-          <Link href="/setup" prefetch className="rounded-lg border border-line px-4 py-2.5 hover:border-signal">
-            Set up a server first
-          </Link>
+
         </div>
       </section>
     );
@@ -283,17 +281,17 @@ export function LiveView() {
 
       {data?.mode === "demo" && (
         <p className="rounded-lg border border-line bg-surface px-4 py-3 text-sm">
-          <strong className="font-medium">Demo data.</strong> These numbers are generated. Connect your server with the{" "}
-          <Link className="text-signal underline" href="/setup" prefetch>
-            server setup guide
-          </Link>
-          , then add the link as <code className="font-mono text-xs">SERVER_URL</code> in Vercel.
+          <strong className="font-medium">Demo data.</strong> These numbers are generated.{" "}
+          <Link className="text-signal underline" href="/connect" prefetch>
+            Add your server
+          </Link>{" "}
+          with one command to see your own.
         </p>
       )}
       {data?.mode === "offline" && (
         <Notice tone="crit" title="Server offline">
-          Last reading <Ago t={data.lastSeen} />. {data.error}. History stays safe: Netdata keeps 30 days on the server and the
-          next sync fills the gap.
+          Last reading <Ago t={data.lastSeen} />. {data.error?.replace(/\.$/, "")}. History stays safe: your server keeps 30 days of
+          readings and the next sync fills the gap.
         </Notice>
       )}
       {data?.mode === "paused" && (
@@ -305,7 +303,11 @@ export function LiveView() {
       )}
       {data?.mode === "error" && (
         <Notice tone="crit" title="The server link is not valid">
-          {data.error}. Fix <code className="font-mono text-xs">SERVER_URL</code> in Vercel or in Settings.
+          {data.error?.replace(/\.$/, "")}. Open{" "}
+          <Link className="underline" href="/connect">
+            Add server
+          </Link>{" "}
+          to connect it again.
         </Notice>
       )}
 

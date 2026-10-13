@@ -47,3 +47,108 @@ export function demoSnapshot(t = Math.floor(Date.now() / 1000)): Snapshot {
 }
 
 export const demoInfo: ServerInfo = { hostname: "demo-server", os: "Ubuntu 24.04 LTS", kernel: "6.8.0", cores: 4, ramGiB: 16, netdata: "demo" };
+
+/** A believable 32-core / 64-thread box for the Server page in demo mode. */
+export function demoPulse(t = Math.floor(Date.now() / 1000)): import("@/lib/pulse").PulseFrame {
+  const n = 64;
+  const base = derive("cpu", demoRaw("cpu", t)).cpu ?? 20;
+  const cores = Array.from({ length: n }, (_, i) => Math.max(0, Math.min(100, Math.round(base * (0.4 + hash01(i * 7919 + Math.floor(t / 2)) * 1.4) + (i % 9 === 0 ? 30 : 0)))));
+  const temps = cores.map((c, i) => Math.round(36 + cores[i % 32]! * 0.3 + (i % 32) * 0.1));
+  const ram = demoRaw("ram", t);
+  const proc = (pid: number, name: string, user: string, cpu: number, mem: number, thr: number) => ({ pid, name, user, cpu, mem, thr });
+  return {
+    boot: "demo",
+    seq: t,
+    t,
+    up: 12 * 86400 + (t % 86400),
+    load: [round2(base / 20), round2(base / 22), round2(base / 25)],
+    cpu: { model: "Intel(R) Xeon(R) Gold 6530", total: Math.round(cores.reduce((a, b) => a + b, 0) / n), cores, temps, pkg: Math.max(...temps) + 3, mhz: cores.map((c) => 800 + c * 30), physical: 32 },
+    mem: { total: 63_900, used: Math.round(ram.used! * 3.4), avail: 63_900 - Math.round(ram.used! * 3.4), cached: 24_300, free: 26_900, swapTotal: 8_190, swapUsed: 0 },
+    disks: [
+      { path: "/data", fs: "ext4", dev: "nvme1n1", size: 11_300_000, used: 590_000, avail: 10_700_000 },
+      { path: "/", fs: "ext4", dev: "nvme0n1p2", size: 2_990_000, used: 278_000, avail: 2_720_000 },
+      { path: "/boot/efi", fs: "vfat", dev: "nvme0n1p1", size: 1_070, used: 6, avail: 1_064 },
+    ],
+    io: [{ dev: "nvme0n1", r: Math.round(base * 40), w: Math.round(base * 90) }, { dev: "nvme1n1", r: Math.round(base * 10), w: Math.round(base * 20) }],
+    net: [{ name: "eno1", in: Math.round(15_000 * (0.5 + hash01(t))), out: Math.round(15_000 * (0.5 + hash01(t + 1))), rxT: 46_300, txT: 46_200 }],
+    procs: {
+      count: 908,
+      top: [
+        proc(254142, "python3", "antpc", round1(base * 0.08), 522, 72),
+        proc(257506, "python", "antpc", round1(base * 0.07), 136, 65),
+        proc(2677, "python", "antpc", round1(base * 0.05), 37, 18),
+        proc(3007, "postgres", "postgres", 0.4, 142, 1),
+        proc(5920, "Xorg", "antpc", 0.3, 424, 2),
+        proc(6955, "gnome-shell", "antpc", 0.2, 603, 81),
+        proc(2676, "netdata", "netdata", 0.1, 202, 499),
+        proc(3219, "grafana", "grafana", 0.1, 263, 51),
+      ],
+      groups: [
+        { name: "python3", n: 6, cpu: round1(base * 0.1), mem: 1_560 },
+        { name: "chrome", n: 140, cpu: 1.2, mem: 9_800 },
+        { name: "postgres", n: 31, cpu: 0.6, mem: 3_900 },
+        { name: "firefox", n: 22, cpu: 0.4, mem: 4_200 },
+        { name: "netdata", n: 3, cpu: 0.2, mem: 380 },
+      ],
+    },
+  };
+}
+
+const round1 = (x: number) => Math.round(x * 10) / 10;
+const round2 = (x: number) => Math.round(x * 100) / 100;
+
+// ---------- demo logs and failures ----------
+
+const DEMO_LINES: [number, string, string][] = [
+  [6, "nginx.service", 'GET /api/orders 200 12ms "Mozilla/5.0"'],
+  [6, "postgresql@16-main.service", "checkpoint complete: wrote 412 buffers (2.5%); 0 WAL file(s) added"],
+  [6, "cron", "(root) CMD (/usr/local/bin/backup.sh --incremental)"],
+  [4, "python3", "WARNING: slow query took 1830 ms: SELECT * FROM sensor_readings WHERE ..."],
+  [6, "sshd", "Accepted publickey for antpc from 192.168.1.20 port 51522 ssh2"],
+  [3, "grafana-server.service", "level=error msg=\"Failed to read plugin\" error=\"open /var/lib/grafana/plugins: permission denied\""],
+  [6, "kernel", "eno1: Link is Up - 1Gbps/Full - flow control rx/tx"],
+  [5, "systemd", "Started Daily apt download activities."],
+  [6, "netdata", "ALERT 'ram_in_use' cleared"],
+]
+
+/** Deterministic, slowly growing demo log: the cursor is the line's timestamp. */
+export function demoLogs(after: string) {
+  const now = Math.floor(Date.now() / 1000);
+  const from = after ? Number(after) + 1 : now - 200;
+  const entries = [];
+  for (let t = Math.max(from, now - 600); t <= now; t++) {
+    if (hash01(t * 13) > 0.35) continue; // about one line every 3 s
+    const [p, u, m] = DEMO_LINES[Math.floor(hash01(t * 7) * DEMO_LINES.length)]!;
+    entries.push({ c: String(t), t: t * 1000, p, u, m });
+  }
+  return { entries, cursor: String(now) };
+}
+
+/** A past window of demo lines, oldest first, paged by cursor (= unix second of the last line). */
+export function demoRangeLogs(since: number, until: number, after: string, n = 500) {
+  const end = Math.min(until || Infinity, Math.floor(Date.now() / 1000));
+  const entries = [];
+  let t = after ? Number(after) + 1 : since;
+  for (; t <= end && entries.length < n; t++) {
+    if (hash01(t * 13) > 0.35) continue;
+    const [p, u, m] = DEMO_LINES[Math.floor(hash01(t * 7) * DEMO_LINES.length)]!;
+    entries.push({ c: String(t), t: t * 1000, p, u, m });
+  }
+  return { entries, cursor: entries.length ? entries[entries.length - 1]!.c : after, more: t <= end, range: true };
+}
+
+export function demoEvents() {
+  const now = Math.floor(Date.now() / 1000);
+  const ev = (id: number, ago: number, severity: string, kind: string, source: string, message: string, count = 1) => ({
+    id, ts: now - ago, last: now - ago + (count > 1 ? 120 : 0), count, severity, kind, source, message,
+  });
+  return [
+    ev(7, 600, "warning", "cpu", "server-pulse", "CPU at 97% for 5+ minutes"),
+    ev(6, 3_400, "error", "service", "grafana-server.service", "grafana-server.service: Failed with result 'exit-code'.", 3),
+    ev(5, 26_000, "critical", "memory", "kernel", "Out of memory: Killed process 254142 (python3) total-vm:18342112kB"),
+    ev(4, 90_000, "info", "online", "dashboard", "Server is reachable again (was offline for 14 minutes)."),
+    ev(3, 90_840, "critical", "offline", "dashboard", "Server unreachable: Timed out after 8 s — server or tunnel is down"),
+    ev(2, 180_000, "error", "log", "postgresql@16-main.service", "FATAL: password authentication failed for user \"report\"", 12),
+    ev(1, 400_000, "warning", "disk", "server-pulse", "Disk / space at 91% for 1+ minutes"),
+  ];
+}

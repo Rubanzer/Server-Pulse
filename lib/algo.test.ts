@@ -144,3 +144,18 @@ test("Lru evicts the least recently used", () => {
   assert.equal(c.get("a"), 1);
   assert.equal(c.get("c"), 3);
 });
+
+import { composeLink, explainPaste } from "./paste-guard.ts";
+
+test("explainPaste recognizes common wrong pastes", () => {
+  assert.match(explainPaste("tskey-auth-kH3dWCpXg221CNTRL-abc")!, /Tailscale auth key/);
+  assert.match(explainPaste("https://login.tailscale.com/admin/invite/8KQKbt1d9Dff")!, /invite/);
+  assert.match(explainPaste("https://bunch-numbly-accent.ngrok-free.dev btop")!, /btop/);
+  assert.match(explainPaste("http://localhost:7681")!, /btop/);
+  assert.equal(explainPaste("https://dashboard:pw@x.ts.net/history"), null);
+});
+
+test("composeLink builds a safe link from fields", () => {
+  assert.equal(composeLink("https://x.ngrok-free.dev/", "dashboard", "p@ss:w/rd"), "https://dashboard:p%40ss%3Aw%2Frd@x.ngrok-free.dev/history");
+  assert.equal(composeLink("old:creds@host.ts.net", "", "pw"), "https://dashboard:pw@host.ts.net/history");
+});

@@ -5,6 +5,7 @@ import { METRICS, type Metric } from "@/lib/charts";
 import { LIMITS, type ServerLink } from "@/lib/config";
 import { affected, db, schema } from "@/lib/db";
 import { ENV_SERVER } from "@/lib/db/schema";
+import { pruneEvents, pullAgentEvents, recordEvent } from "@/lib/events";
 import { mailConfigured, sendMail } from "@/lib/mail";
 import { info, series, type RawPoint } from "@/lib/netdata";
 import { deleteSetting, getLink, getSetting, k, setSetting } from "@/lib/settings";
@@ -99,14 +100,20 @@ async function finishRun(id: number | null, rows: number, status: string, error?
 /** HIS-10: one email per outage after about a day offline; cleared when the server answers again. */
 async function trackOffline(sid: string, online: boolean, error?: string) {
   if (online) {
-    if (await getSetting(k(sid, "offline_since"))) {
+    const was = Number(await getSetting(k(sid, "offline_since"))) || 0;
+    if (was) {
+      const mins = Math.max(1, Math.round((nowSec() - was) / 60));
+      await recordEvent(sid, "info", "online", `Server is reachable again (was offline for ${mins >= 120 ? `${Math.round(mins / 60)} hours` : `${mins} minutes`}).`);
       await deleteSetting(k(sid, "offline_since"));
       await deleteSetting(k(sid, "offline_mailed"));
     }
     return;
   }
   const since = Number(await getSetting(k(sid, "offline_since"))) || 0;
-  if (!since) return setSetting(k(sid, "offline_since"), String(nowSec()));
+  if (!since) {
+    await recordEvent(sid, "critical", "offline", `Server unreachable: ${error ?? "no answer"}`);
+    return setSetting(k(sid, "offline_since"), String(nowSec()));
+  }
   const due = nowSec() - since >= LIMITS.offlineEmailAfterSec - LIMITS.cronSlackSec;
   // Only the owner-configured address (ALERT_EMAIL_TO) for the env server. Account emails are not
   // verified, so mailing them would let anyone make this app send mail to an address they typed.
@@ -139,6 +146,8 @@ export async function syncServer(link: ServerLink | null): Promise<SyncResult> {
     const { rows, errors } = await syncRecent(link);
     const status = errors.length === 0 ? "ok" : errors.length === METRICS.length ? "error" : "partial";
     result = { status, rows, error: errors.join("; ") || undefined };
+    if (status !== "ok") await recordEvent(link.sid, status === "error" ? "error" : "warning", "sync", `History sync ${status}: ${result.error}`);
+    await pullAgentEvents(link).catch(() => 0); // keep the failure history even when nobody opens the page
   } catch (e) {
     const msg = (e as Error).message;
     await trackOffline(link.sid, false, msg).catch(() => {});
@@ -176,6 +185,7 @@ export async function syncAll() {
   };
   await Promise.all([worker(), worker(), worker()]);
   const rolledUp = await rollup();
+  await pruneEvents().catch(() => {});
   return { servers: Object.keys(results).length, skipped: Math.max(0, sids.length - next), rolledUp, results };
 }
 
