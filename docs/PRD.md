@@ -516,7 +516,7 @@ Four independent reviewers (time-series data engineer, sync/reliability research
 - A clock stepped backwards (NTP) no longer scrambles the ring buffers: readings older than the last one are dropped until time catches up.
 - `/api/v1/events` returns up to its whole ring (2,000) in one answer.
 
-**Efficiency**: one History request instead of seven; the server link is cached 10 minutes per instance and the ngrok counter flushed every 60 requests, so an open Live tab no longer keeps a serverless Postgres awake around the clock; the row-count race in catch-up reporting is fixed.
+**Efficiency**: one History request instead of seven; the ngrok counter is flushed every 60 requests instead of every 10, and the server link is cached 2 minutes per instance (dropped at once when the server rejects its password), so Live touches Postgres far less often; History answers are never HTTP-cached because they depend on who is logged in; the row-count race in catch-up reporting is fixed.
 
 **Decided not to do (yet)**: Live reading the agent's stream instead of polling (big UI change; the Server view already streams); hourly peak columns for >30-day ranges; a storage diet (dropping `id`, `real[]` values, 7-day 1-minute retention) — each worth its own change once more servers share one free database.
 
