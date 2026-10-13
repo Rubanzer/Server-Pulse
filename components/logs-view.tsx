@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useSearchParams } from "next/navigation";
 import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { RingBuffer } from "@/lib/algo";
+import { LOGS_IDLE_MS, readIdle } from "./stream-utils";
 import { fmtWindow, TimeRange } from "./time-range";
 
 /** hold: this line repeated 5× in a minute, copies are held back for `hold` s; held: copies held back before it */
@@ -202,6 +203,7 @@ function useLogStream(prio: number, unit: string, paused: boolean, enabled: bool
 
     async function stream(): Promise<"ended" | "fallback"> {
       const tk = await fetch("/api/logs/token", { cache: "no-store" }).then((r) => r.json());
+      if (stopped) return "ended";
       if (tk.demo || !tk.url) return "fallback";
       ctrl = new AbortController();
       const res = await fetch(`${tk.url}?${qs}`, {
@@ -218,7 +220,7 @@ function useLogStream(prio: number, unit: string, paused: boolean, enabled: bool
       const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
       let buf = "";
       for (;;) {
-        const { value, done } = await reader.read();
+        const { value, done } = await readIdle(reader, LOGS_IDLE_MS, () => ctrl?.abort());
         if (done) return "ended";
         buf += value;
         let nl;
@@ -264,6 +266,7 @@ function useLogStream(prio: number, unit: string, paused: boolean, enabled: bool
           if (useStream) {
             const r = await stream();
             if (r === "fallback") useStream = false;
+            else await new Promise((res) => setTimeout(res, 1000)); // reconnect, never in a tight loop
             fails = 0;
             backoff = 1000;
             continue;
@@ -682,6 +685,8 @@ function Failures({ jump, onShowLogs }: { jump: Jump | null; onShowLogs: (j: Omi
   const [loadingMore, setLoadingMore] = useState(false);
   const [summary, setSummary] = useState<Record<string, number>>({});
 
+  const loadCtrl = useRef<AbortController | null>(null);
+  useEffect(() => () => loadCtrl.current?.abort(), []);
   const load = useCallback(
     async (before?: number) => {
       const p = new URLSearchParams({ limit: "50" });
@@ -689,9 +694,13 @@ function Failures({ jump, onShowLogs }: { jump: Jump | null; onShowLogs: (j: Omi
       if (before) p.set("before", String(before));
       if (win.from) p.set("since", String(win.from));
       if (win.to) p.set("until", String(win.to));
-      const r = await fetch(`/api/events?${p}`, { cache: "no-store" })
+      loadCtrl.current?.abort(); // an older filter's answer must not overwrite this one
+      const ctrl = new AbortController();
+      loadCtrl.current = ctrl;
+      const r = await fetch(`/api/events?${p}`, { cache: "no-store", signal: ctrl.signal })
         .then((x) => x.json())
         .catch(() => null);
+      if (ctrl.signal.aborted) return;
       if (!r?.events) return setNote(r?.error ?? "Couldn't load failures. Check your connection.");
       setNote(r.note ?? null);
       setStored(r.stored !== false);

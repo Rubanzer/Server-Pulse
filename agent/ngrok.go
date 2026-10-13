@@ -10,9 +10,12 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"os/user"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -24,8 +27,18 @@ import (
 // user could otherwise listen on :4040 and name a host of their choosing. The check is made on the very
 // connection the answer arrives on (its server-side socket → owning process), not on the port before
 // connecting, so the port can't change hands in between.
-func detectNgrok() string {
-	c := http.Client{Timeout: time.Second, Transport: &http.Transport{DisableKeepAlives: true, DialContext: dialNgrok}}
+//
+// Returns the address and the ngrok process that served it (to set up its auto-start), or "" / 0.
+func detectNgrok() (string, int) {
+	pid := 0
+	dial := func(ctx context.Context, network, addr string) (net.Conn, error) {
+		conn, p, err := dialNgrok(ctx, network, addr)
+		if err == nil {
+			pid = p
+		}
+		return conn, err
+	}
+	c := http.Client{Timeout: time.Second, Transport: &http.Transport{DisableKeepAlives: true, DialContext: dial}}
 	for port := 4040; port <= 4045; port++ {
 		r, err := c.Get(fmt.Sprintf("http://127.0.0.1:%d/api/tunnels", port))
 		if err != nil {
@@ -47,11 +60,11 @@ func detectNgrok() string {
 		}
 		for _, t := range body.Tunnels {
 			if u := originOf(t.PublicURL); strings.HasPrefix(u, "https://") && forwardsToAgent(t.Config.Addr) {
-				return u
+				return u, pid
 			}
 		}
 	}
-	return ""
+	return "", 0
 }
 
 // forwardsToAgent: ngrok's "addr" for `ngrok http 19998` / `http://localhost:19998` / `127.0.0.1:19998`.
@@ -77,32 +90,37 @@ func forwardsToAgent(addr string) bool {
 
 var errNotNgrok = errors.New("not an ngrok process")
 
-// dialNgrok connects, then keeps the connection only if the process holding its other end is ngrok.
-func dialNgrok(ctx context.Context, network, addr string) (net.Conn, error) {
+// dialNgrok connects, then keeps the connection only if the process holding its other end is ngrok
+// (returned, so the installer can set up that same ngrok to start with the machine).
+func dialNgrok(ctx context.Context, network, addr string) (net.Conn, int, error) {
 	conn, err := (&net.Dialer{Timeout: time.Second}).DialContext(ctx, network, addr)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
 	local, _ := conn.LocalAddr().(*net.TCPAddr)
 	remote, _ := conn.RemoteAddr().(*net.TCPAddr)
-	if local == nil || remote == nil || !peerIsNgrok(remote.Port, local.Port) {
-		conn.Close()
-		return nil, errNotNgrok
+	pid := 0
+	if local != nil && remote != nil {
+		pid = peerNgrokPID(remote.Port, local.Port)
 	}
-	return conn, nil
+	if pid == 0 {
+		conn.Close()
+		return nil, 0, errNotNgrok
+	}
+	return conn, pid, nil
 }
 
-// peerIsNgrok: the accepted socket 127.0.0.1:serverPort ↔ 127.0.0.1:clientPort belongs to ngrok.
-func peerIsNgrok(serverPort, clientPort int) bool {
+// peerNgrokPID: the ngrok process holding the accepted socket 127.0.0.1:serverPort ↔ :clientPort, or 0.
+func peerNgrokPID(serverPort, clientPort int) int {
 	inode := connInode(serverPort, clientPort)
 	if inode == "" {
-		return false
+		return 0
 	}
-	return socketOwnedByNgrok("socket:[" + inode + "]")
+	return socketNgrokPID("socket:[" + inode + "]")
 }
 
-// socketOwnedByNgrok: the socket is open in a process named ngrok run by root or $SUDO_UID.
-func socketOwnedByNgrok(want string) bool {
+// socketNgrokPID: the process with the socket open, if it is named ngrok and run by root or $SUDO_UID.
+func socketNgrokPID(want string) int {
 	sudoUID := os.Getenv("SUDO_UID")
 	procs, _ := os.ReadDir("/proc")
 	for _, p := range procs {
@@ -116,13 +134,16 @@ func socketOwnedByNgrok(want string) bool {
 				continue
 			}
 			if strings.TrimSpace(string(readFile(dir+"/comm"))) != "ngrok" {
-				return false
+				return 0
 			}
-			uid := procUID(dir)
-			return uid == "0" || (sudoUID != "" && uid == sudoUID)
+			if uid := procUID(dir); uid == "0" || (sudoUID != "" && uid == sudoUID) {
+				pid, _ := strconv.Atoi(p.Name())
+				return pid
+			}
+			return 0
 		}
 	}
-	return false
+	return 0
 }
 
 // connInode returns the inode of the established loopback socket whose local end is serverPort and
@@ -195,5 +216,154 @@ func quietLegacyServices() {
 		case failing:
 			fmt.Printf("! Your old %s service is failing. If you don't use it any more: sudo systemctl disable --now %s\n", unit, unit)
 		}
+	}
+}
+
+// ---------- ngrok that comes back after a restart or power cut ----------
+
+const ngrokUnitName = "server-pulse-ngrok"
+const ngrokUnitPath = "/etc/systemd/system/" + ngrokUnitName + ".service"
+
+// ngrokUnit is the service that runs the same ngrok, as the same user, with the same address. After
+// network.target, not network-online (ngrok reconnects by itself), so it is up within seconds of boot.
+// Failing (quota used up, offline) it retries every 10 s, backing off to 5 min where systemd supports
+// RestartSteps (255+); older systemd ignores those two lines and keeps 10 s.
+func ngrokUnit(user, exe, publicURL string, hasURLFlag bool) string {
+	addr := "--url=" + publicURL
+	if !hasURLFlag {
+		addr = "--domain=" + strings.TrimPrefix(publicURL, "https://") // ngrok v3 before --url existed
+	}
+	return `[Unit]
+Description=ngrok tunnel for the Server Pulse agent (set up by server-pulse-agent install)
+After=network.target server-pulse-agent.service
+StartLimitIntervalSec=0
+
+[Service]
+User=` + user + `
+ExecStart=` + exe + ` http 19998 ` + addr + ` --log=stdout
+Restart=always
+RestartSec=10
+RestartSteps=10
+RestartMaxDelaySec=300
+
+[Install]
+WantedBy=multi-user.target
+`
+}
+
+var (
+	safeUser = regexp.MustCompile(`^[a-z_][a-z0-9_-]{0,31}$`)
+	safeExe  = regexp.MustCompile(`^/[A-Za-z0-9._/+-]+/ngrok$`)
+	safeHost = regexp.MustCompile(`^https://[a-z0-9-]+(\.[a-z0-9-]+)+$`)
+)
+
+// setupNgrokService makes the running ngrok (pid) start with the machine. It is only enabled, not
+// started: the ngrok running now holds the address, and a second copy would fight it for it. Skipped
+// when the owner already has their own ngrok service for this agent.
+func setupNgrokService(pid int, publicURL string) string {
+	if pid == 0 {
+		return ""
+	}
+	for _, own := range []string{"pulse-ngrok", "ngrok"} {
+		if out, _ := exec.Command("systemctl", "is-enabled", own).Output(); strings.TrimSpace(string(out)) == "enabled" {
+			return "Your " + own + " service already starts ngrok with the machine"
+		}
+	}
+	exe, _ := os.Readlink(fmt.Sprintf("/proc/%d/exe", pid))
+	exe = strings.TrimSuffix(exe, " (deleted)")
+	if strings.HasPrefix(exe, "/snap/") {
+		exe = "/snap/bin/ngrok" // the revision path disappears after snap refreshes; this one stays
+	}
+	uid := procUID(fmt.Sprintf("/proc/%d", pid))
+	u, err := user.LookupId(uid)
+	// everything that goes into the unit is checked: it runs at every boot
+	if err != nil || !safeUser.MatchString(u.Username) || !safeExe.MatchString(exe) || !safeHost.MatchString(publicURL) {
+		return ""
+	}
+	// a root service must not run a file someone else can replace (that would be root at every boot)
+	if uid == "0" && !rootOwnedPath(exe) {
+		return "Not setting up ngrok to start by itself: " + exe + " can be changed by other users. Move ngrok to /usr/local/bin to get that"
+	}
+	if os.WriteFile(ngrokUnitPath, []byte(ngrokUnit(u.Username, exe, publicURL, ngrokHasURLFlag(exe, u))), 0o644) != nil {
+		return ""
+	}
+	run("systemctl", "daemon-reload")
+	if run("systemctl", "enable", ngrokUnitName) != nil {
+		return ""
+	}
+	return "ngrok will also start by itself after a restart or power cut (" + ngrokUnitName + ".service; it uses your ngrok account settings, not other options you started ngrok with)"
+}
+
+// rootOwnedPath: the file and every directory above it belong to root and only root can write them.
+func rootOwnedPath(p string) bool {
+	for cur := p; ; cur = filepath.Dir(cur) {
+		fi, err := os.Stat(cur)
+		if err != nil {
+			return false
+		}
+		st, ok := fi.Sys().(*syscall.Stat_t)
+		if !ok || st.Uid != 0 || fi.Mode().Perm()&0o022 != 0 {
+			return false
+		}
+		if cur == "/" {
+			return true
+		}
+	}
+}
+
+// ngrokHasURLFlag: newer ngrok takes --url; older v3 releases only know --domain. The installer runs as
+// root, so the probe runs as ngrok's own user (a root ngrok was already checked to be root-owned): a
+// file a normal user can change is never executed with root's rights.
+func ngrokHasURLFlag(exe string, owner *user.User) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, exe, "http", "--help")
+	cmd.Env = []string{"HOME=" + owner.HomeDir, "PATH=/usr/local/bin:/usr/bin:/bin"}
+	if owner.Uid != "0" {
+		uid, err1 := strconv.ParseUint(owner.Uid, 10, 32)
+		gid, err2 := strconv.ParseUint(owner.Gid, 10, 32)
+		if err1 != nil || err2 != nil {
+			return true // can't drop privileges: don't run it, assume the current flag
+		}
+		// no supplementary groups (root's would be kept otherwise) and its own session: without a controlling
+		// terminal it can't push keystrokes into the root shell that runs the installer (TIOCSTI)
+		cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true, Credential: &syscall.Credential{Uid: uint32(uid), Gid: uint32(gid), Groups: []uint32{}}}
+	}
+	out, _ := cmd.CombinedOutput()
+	return strings.Contains(string(out), "--url")
+}
+
+// startNgrokServiceIfIdle: re-installing while the hand-started ngrok is gone (e.g. after a power cut
+// on an older setup) starts the service, so the tunnel is back without typing anything.
+func startNgrokServiceIfIdle(want string) bool {
+	if _, err := os.Stat(ngrokUnitPath); err != nil {
+		return false
+	}
+	if run("systemctl", "start", ngrokUnitName) != nil {
+		return false
+	}
+	for i := 0; i < 10; i++ { // up to 10 s for ngrok to connect and report its address
+		time.Sleep(time.Second)
+		if u, _ := detectNgrok(); u == want {
+			return true
+		}
+	}
+	return false
+}
+
+// ngrokUnitServes: the auto-start unit exists and publishes this address.
+func ngrokUnitServes(publicURL string) bool {
+	b, err := os.ReadFile(ngrokUnitPath)
+	if err != nil {
+		return false
+	}
+	return strings.Contains(string(b), "--url="+publicURL+" ") || strings.Contains(string(b), "--domain="+strings.TrimPrefix(publicURL, "https://")+" ")
+}
+
+func removeNgrokService() {
+	if _, err := os.Stat(ngrokUnitPath); err == nil {
+		run("systemctl", "disable", "--now", ngrokUnitName)
+		os.Remove(ngrokUnitPath)
+		run("systemctl", "daemon-reload")
 	}
 }

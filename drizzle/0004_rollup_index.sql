@@ -1,0 +1,1 @@
+CREATE INDEX "samples_fine_ts" ON "samples" USING btree ("ts") WHERE "samples"."resolution_s" < 3600;

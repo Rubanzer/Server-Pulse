@@ -147,6 +147,18 @@ export async function decidePairing(code: string, serverId: string, approve: boo
     )
     .returning({ codeHash: schema.pairings.codeHash });
   if (!claimed.length) return { ok: false, error: "This request was already answered." };
-  if (approve && link) await saveLink(serverId, link);
+  if (approve && link) {
+    try {
+      await saveLink(serverId, link);
+    } catch (e) {
+      // put the request back, so "Approve" can simply be clicked again
+      await db
+        .update(schema.pairings)
+        .set({ approvedAt: null, pendingLinkEnc: row.pendingLinkEnc })
+        .where(eq(schema.pairings.codeHash, row.codeHash))
+        .catch(() => {});
+      return { ok: false, error: `Couldn't save the server: ${(e as Error).message}. Try Approve again.` };
+    }
+  }
   return { ok: true };
 }

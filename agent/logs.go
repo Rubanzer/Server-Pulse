@@ -537,17 +537,16 @@ func (l *EventLog) compact() {
 	}
 	l.events = out
 	l.lines = len(out)
-	tmp := l.path + ".tmp"
-	if f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600); err == nil {
-		w := bufio.NewWriter(f)
+	// on a full disk the old file stays (it holds the history); the next compaction tries again
+	writeAtomic(l.path, func(w *bufio.Writer) error {
 		for _, e := range out {
 			b, _ := json.Marshal(e)
-			w.Write(append(b, '\n'))
+			if _, err := w.Write(append(b, '\n')); err != nil {
+				return err
+			}
 		}
-		w.Flush()
-		f.Close()
-		os.Rename(tmp, l.path)
-	}
+		return nil
+	})
 }
 
 func eventKey(source, msg string) string { return source + "|" + digitsRe.ReplaceAllString(msg, "#") }
@@ -685,18 +684,18 @@ func watchJournal(ctx context.Context, l *EventLog, cursorFile string) {
 			}
 			cursor = e.Cursor
 			if time.Since(lastSave) > 10*time.Second {
-				os.WriteFile(cursorFile, []byte(cursor), 0o600)
+				saveCursor(cursorFile, cursor)
 				lastSave = time.Now()
 			}
 			return ctx.Err() == nil
 		})
 		if cursor != "" {
-			os.WriteFile(cursorFile, []byte(cursor), 0o600)
+			saveCursor(cursorFile, cursor)
 		}
 		if errors.Is(err, errNoJournal) {
 			return
 		}
-		if got == 0 && time.Since(started) < 3*time.Second && cursor != "" {
+		if got == 0 && time.Since(started) < 3*time.Second && cursor != "" && ctx.Err() == nil {
 			cursor = "" // journalctl rejected the cursor (journal rotated or vacuumed): start at the tail
 			os.Remove(cursorFile)
 		}
@@ -705,6 +704,10 @@ func watchJournal(ctx context.Context, l *EventLog, cursorFile string) {
 		case <-time.After(5 * time.Second):
 		}
 	}
+}
+
+func saveCursor(path, cursor string) {
+	writeAtomic(path, func(w *bufio.Writer) error { _, err := w.WriteString(cursor); return err })
 }
 
 // savedCursor returns the remembered journal position, unless it is over a week old: catching up a

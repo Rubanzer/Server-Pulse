@@ -8,7 +8,7 @@ import { ENV_SERVER } from "@/lib/db/schema";
 import { pruneEvents, pullAgentEvents, recordEvent } from "@/lib/events";
 import { mailConfigured, sendMail } from "@/lib/mail";
 import { agentCoverage, info, series, type RawPoint } from "@/lib/netdata";
-import { deleteSetting, getLink, getSetting, k, setSetting } from "@/lib/settings";
+import { advanceSetting, deleteSetting, getLink, getSetting, k, setSetting } from "@/lib/settings";
 import { flushUsage } from "@/lib/usage";
 
 const nowSec = () => Math.floor(Date.now() / 1000);
@@ -22,7 +22,8 @@ async function insert(sid: string, metric: Metric, points: RawPoint[], resolutio
     const rows = await db
       .insert(schema.samples)
       .values(part.map((p) => ({ serverId: sid, chart: metric, ts: new Date(p.t * 1000), values: p.d, resolutionS })))
-      .onConflictDoNothing()
+      // a re-fetched minute overwrites its old row: two catch-ups at once both end with the right data
+      .onConflictDoUpdate({ target: [schema.samples.serverId, schema.samples.chart, schema.samples.ts, schema.samples.resolutionS], set: { values: sql`excluded.values` } })
       .returning({ id: schema.samples.id });
     n += rows.length;
   }
@@ -52,9 +53,15 @@ function fetchMinutes(link: ServerLink, m: Metric, a: number, b: number) {
   return series(link, m, after, after + 60 * n - 1, n);
 }
 
-/** Store a chunk: the server is the source of truth for the span it answered, so replace that span. */
+/**
+ * Store a chunk: the server is the source of truth for the span it answered. Write first (upsert on the
+ * minute grid), then remove only rows that aren't on that grid (old 5-minute import rows, the duplicate
+ * 61-second rows of the old sync). A run killed between the two steps leaves extra rows, never a hole,
+ * and two runs at once can't delete each other's data.
+ */
 async function replaceSpan(sid: string, m: Metric, pts: RawPoint[]) {
   if (!pts.length) return 0;
+  const n = await insert(sid, m, pts, 60);
   await db!
     .delete(schema.samples)
     .where(
@@ -64,14 +71,18 @@ async function replaceSpan(sid: string, m: Metric, pts: RawPoint[]) {
         lt(schema.samples.resolutionS, 3600),
         gte(schema.samples.ts, new Date(pts[0]!.t * 1000)),
         lte(schema.samples.ts, new Date(pts[pts.length - 1]!.t * 1000)),
+        sql`(${schema.samples.resolutionS} <> 60 or extract(epoch from ${schema.samples.ts})::bigint % 60 <> 0)`,
       ),
     );
-  return insert(sid, m, pts, 60);
+  return n;
 }
 
 export type CatchUp = { rows: number; errors: string[]; pending: boolean; syncedTo: number | null };
 
-/** Copy everything the dashboard doesn't have yet, until `deadline` (ms). Safe to run concurrently with itself. */
+/**
+ * Copy everything the dashboard doesn't have yet, until `deadline` (ms). Concurrent runs (cron, several
+ * tabs) are safe: writes are upserts, cleanup never deletes grid rows, and the watermark only moves forward.
+ */
 export async function catchUp(link: ServerLink, deadline: number): Promise<CatchUp> {
   const sid = link.sid;
   // what the agent holds and when it ran: labels gaps and tells where its history starts
@@ -87,17 +98,18 @@ export async function catchUp(link: ServerLink, deadline: number): Promise<Catch
   const marks: number[] = [];
   await Promise.all(
     METRICS.map(async (m) => {
-      let mark = Number(await getSetting(syncedKey(sid, m))) || 0;
-      // first time: start where the agent's history starts (Netdata: 30 days back)
-      let from = mark ? mark - 300 : (cov?.oldest ?? floor);
-      from = Math.max(from, floor);
+      let mark = 0;
       try {
+        mark = Number(await getSetting(syncedKey(sid, m))) || 0;
+        // first time: start where the agent's history starts (Netdata: 30 days back)
+        let from = mark ? mark - 300 : (cov?.oldest ?? floor);
+        from = Math.max(from, floor);
         while (from < now && Date.now() < deadline) {
           const to = Math.min(now, from + CHUNK_SEC);
           const stored = await replaceSpan(sid, m, await fetchMinutes(link, m, from, to));
           rows += stored; // not `rows += await …`: that reads `rows` before the await and loses the other charts' counts
           mark = to;
-          await setSetting(syncedKey(sid, m), String(mark));
+          await advanceSetting(syncedKey(sid, m), mark);
           from = to;
         }
       } catch (e) {
@@ -196,23 +208,31 @@ export type SyncResult = {
 };
 
 /** One server: offline check → 26 h sync → record. Idempotent, safe to re-run. */
-export async function syncServer(link: ServerLink | null): Promise<SyncResult> {
+export async function syncServer(link: ServerLink | null, deadline?: number): Promise<SyncResult> {
   if (!db) return { status: "skipped", rows: 0, error: "No database connected" };
   if (!link) return { status: "skipped", rows: 0, error: "No server link configured" };
   const id = await startRun(link.sid, "sync");
   let result: SyncResult;
   try {
     await info(link);
+  } catch (e) {
+    // only a failed request to the server means "offline"; a database hiccup below is not
+    const msg = (e as Error).message;
+    await trackOffline(link.sid, false, msg).catch(() => {});
+    result = { status: "offline", rows: 0, error: msg };
+    await finishRun(id, 0, result.status, msg).catch(() => {});
+    await flushUsage(link.sid).catch(() => {});
+    return result;
+  }
+  try {
     await trackOffline(link.sid, true);
-    const { rows, errors } = await catchUp(link, Date.now() + LIMITS.syncBudgetMs);
+    const { rows, errors } = await catchUp(link, deadline ?? Date.now() + LIMITS.syncBudgetMs);
     const status = errors.length === 0 ? "ok" : errors.length === METRICS.length ? "error" : "partial";
     result = { status, rows, error: errors.join("; ") || undefined };
     if (status !== "ok") await recordEvent(link.sid, status === "error" ? "error" : "warning", "sync", `History sync ${status}: ${result.error}`);
     await pullAgentEvents(link).catch(() => 0); // keep the failure history even when nobody opens the page
   } catch (e) {
-    const msg = (e as Error).message;
-    await trackOffline(link.sid, false, msg).catch(() => {});
-    result = { status: "offline", rows: 0, error: msg };
+    result = { status: "error", rows: 0, error: (e as Error).message };
   }
   await finishRun(id, result.rows, result.status, result.error);
   if (link.sid !== ENV_SERVER) await db.update(schema.servers).set({ lastSyncAt: new Date() }).where(eq(schema.servers.id, link.sid));
@@ -235,18 +255,22 @@ export async function syncAll() {
       .orderBy(sql`${schema.servers.lastSyncAt} ASC NULLS FIRST`);
     sids.push(...rows.map((r) => r.id));
   }
+  // housekeeping first: if syncing servers runs long and the function is stopped, the database still
+  // gets rolled up and pruned tonight (otherwise it grows until the free tier is full)
+  const rolledUp = await rollup().catch(() => 0);
+  await pruneEvents().catch(() => {});
   const results: Record<string, SyncResult> = {};
   let next = 0;
+  const end = started + LIMITS.cronBudgetMs; // every server's catch-up stops by then
   const worker = async () => {
-    while (next < sids.length && Date.now() - started < LIMITS.cronBudgetMs) {
+    // a server started late still has time to finish within the function limit
+    while (next < sids.length && Date.now() < end - 20_000) {
       const sid = sids[next++]!;
       const { link } = await getLink(sid);
-      if (link) results[sid] = await syncServer(link);
+      if (link) results[sid] = await syncServer(link, Math.min(Date.now() + LIMITS.syncBudgetMs, end));
     }
   };
   await Promise.all([worker(), worker(), worker()]);
-  const rolledUp = await rollup();
-  await pruneEvents().catch(() => {});
   return { servers: Object.keys(results).length, skipped: Math.max(0, sids.length - next), rolledUp, results };
 }
 

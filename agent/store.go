@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bufio"
+	"bytes"
 	"encoding/gob"
 	"math"
 	"os"
@@ -216,26 +218,19 @@ func (s *Store) Query(id string, after, before int64, points int) [][]float64 {
 // ---------- persistence: the 30-day tier survives restarts and reboots ----------
 
 func (s *Store) Save(path string) error {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	tmp := path + ".tmp"
-	f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600)
+	// encode in memory under the read lock (fast), then write and fsync without it: a slow disk must not
+	// stall the 1 s sampler and every reader for seconds every 5 minutes
+	var buf bytes.Buffer
+	s.mu.RLock()
+	err := gob.NewEncoder(&buf).Encode(s.coarse)
+	s.mu.RUnlock()
 	if err != nil {
 		return err
 	}
-	if err := gob.NewEncoder(f).Encode(s.coarse); err != nil {
-		f.Close()
-		return err
-	}
-	if err := f.Sync(); err != nil {
-		f.Close()
-		return err
-	}
-	f.Close()
-	return os.Rename(tmp, path) // atomic: a crash mid-save never leaves a half-written file
+	return writeAtomic(path, func(w *bufio.Writer) error { _, err := w.Write(buf.Bytes()); return err })
 }
 
 // Load restores the 30-day tier. Charts whose dimensions changed (e.g. a sensor was added) start fresh.
@@ -251,8 +246,8 @@ func (s *Store) Load(path string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if old.Cap != coarseCap || len(old.Times) != coarseCap {
-		return nil
+	if old.Cap != coarseCap || len(old.Times) != coarseCap || old.Head < 0 || old.Head >= coarseCap || old.Len < 0 || old.Len > coarseCap {
+		return nil // damaged or from another layout: start fresh rather than crash on every start
 	}
 	s.coarse.Times, s.coarse.Head, s.coarse.Len = old.Times, old.Head, old.Len
 	for id, n := range s.coarse.Dims {

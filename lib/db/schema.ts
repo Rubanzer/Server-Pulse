@@ -1,4 +1,5 @@
 import { bigserial, index, integer, jsonb, pgTable, text, timestamp, unique } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 
 /** The server configured through env vars (SERVER_URL + shared passwords). Accounts get their own ids. */
 export const ENV_SERVER = "env";
@@ -35,7 +36,11 @@ export const samples = pgTable(
     resolutionS: integer("resolution_s").notNull(),
   },
   // The unique index also serves every (server, chart, ts) range scan, so no separate index is needed.
-  (t) => [unique("samples_server_chart_ts_res").on(t.serverId, t.chart, t.ts, t.resolutionS)],
+  (t) => [
+    unique("samples_server_chart_ts_res").on(t.serverId, t.chart, t.ts, t.resolutionS),
+    // the nightly rollup finds minute rows older than 30 days by time alone: without this it scans the table
+    index("samples_fine_ts").on(t.ts).where(sql`${t.resolutionS} < 3600`),
+  ],
 );
 
 export const syncRuns = pgTable(

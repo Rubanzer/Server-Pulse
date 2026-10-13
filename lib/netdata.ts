@@ -216,7 +216,14 @@ export async function series(link: ServerLink, metric: Metric, after: number, be
   if (metric === "temp") {
     const ids = await tempCharts(link);
     if (!ids.length) return [];
-    const all = await Promise.all(ids.map((id) => chartData(link, id, after, before, points).catch(() => [])));
+    const all = await Promise.all(
+      ids.map((id) =>
+        chartData(link, id, after, before, points).catch((e) => {
+          if (e instanceof NetdataError && e.status === 404) return [];
+          throw e; // a timeout must fail the chunk, or the watermark would skip that day of temperature
+        }),
+      ),
+    );
     // hottest sensor per timestamp across every temperature chart
     const merged = mergeMax(all.map((s) => s.map((p) => [p.t, Math.max(...Object.values(p.d))] as [number, number])));
     return merged.map(([t, v]) => ({ t, d: { max: v } }));

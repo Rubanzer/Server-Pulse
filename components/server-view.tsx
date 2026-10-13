@@ -4,6 +4,7 @@ import { Fragment, memo, useEffect, useMemo, useRef, useState } from "react";
 import { RingBuffer } from "@/lib/algo";
 import type { Point } from "@/lib/charts";
 import { mergeFrame, type PulseFrame } from "@/lib/pulse";
+import { PULSE_IDLE_MS, readIdle } from "./stream-utils";
 import { AnimatedNumber } from "./animated-number";
 import { Legend } from "./chart-utils";
 import { LiveChart } from "./live-chart";
@@ -81,6 +82,7 @@ function useServerFrames() {
 
     async function stream(): Promise<"ended" | "fallback"> {
       const tk = await fetch("/api/pulse/token", { cache: "no-store" }).then((r) => r.json());
+      if (stopped) return "ended";
       if (tk.demo || !tk.url) return "fallback";
       ctrl = new AbortController();
       const res = await fetch(tk.url, {
@@ -94,7 +96,7 @@ function useServerFrames() {
       const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
       let buf = "";
       for (;;) {
-        const { value, done } = await reader.read();
+        const { value, done } = await readIdle(reader, PULSE_IDLE_MS, () => ctrl?.abort());
         if (done) return "ended"; // the agent ends sessions after 15 min: reconnect with a fresh token
         buf += value;
         let nl;
@@ -135,6 +137,7 @@ function useServerFrames() {
           if (useStream) {
             const r = await stream();
             if (r === "fallback") useStream = false;
+            else await sleep(1000); // a session that ended: reconnect, but never in a tight loop
             streamFails = 0;
             backoff = 1000;
             continue;

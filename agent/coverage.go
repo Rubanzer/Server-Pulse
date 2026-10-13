@@ -32,17 +32,15 @@ func recordRun(dir string, now int64) []Run {
 	if len(runs) > maxRuns {
 		runs = runs[len(runs)-maxRuns:]
 	}
-	tmp := path + ".tmp"
-	if f, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0o600); err == nil {
-		w := bufio.NewWriter(f)
+	writeAtomic(path, func(w *bufio.Writer) error {
 		for _, r := range runs {
 			b, _ := json.Marshal(r)
-			w.Write(append(b, '\n'))
+			if _, err := w.Write(append(b, '\n')); err != nil {
+				return err
+			}
 		}
-		w.Flush()
-		f.Close()
-		os.Rename(tmp, path)
-	}
+		return nil
+	})
 	return runs
 }
 

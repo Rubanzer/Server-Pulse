@@ -4,7 +4,7 @@ import { sessionOf } from "@/lib/auth";
 import { LIMITS } from "@/lib/config";
 import { db } from "@/lib/db";
 import { getLink, getSetting, setSetting } from "@/lib/settings";
-import { rollup, syncAll, syncServer } from "@/lib/sync";
+import { syncAll, syncServer } from "@/lib/sync";
 
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
@@ -25,7 +25,6 @@ async function handle(req: NextRequest) {
   const s = await sessionOf(req);
   if (s?.role === "owner" && !bearerOk(req)) {
     const result = await syncServer((await getLink(s.sid)).link);
-    await rollup().catch(() => 0);
     return Response.json(result, { status: result.status === "error" ? 502 : 200 });
   }
   if (!bearerOk(req)) {

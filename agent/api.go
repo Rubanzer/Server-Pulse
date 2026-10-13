@@ -235,7 +235,20 @@ func hostInfo() map[string]any {
 }
 
 // logs?n=&prio=&unit=&after=<cursor> — recent journal lines (basic auth), for the dashboard's fallback.
+// at most two journalctl runs for /api/v1/logs at once: a week-long range uses real memory, and the
+// service is capped at 300 MB
+var journalSlots = make(chan struct{}, 2)
+
 func (a *API) handleLogs(w http.ResponseWriter, r *http.Request) {
+	select {
+	case journalSlots <- struct{}{}:
+		defer func() { <-journalSlots }()
+	case <-r.Context().Done():
+		return
+	case <-time.After(10 * time.Second):
+		http.Error(w, "busy reading logs, try again", http.StatusServiceUnavailable)
+		return
+	}
 	f, err := parseFilter(r.URL.Query())
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
