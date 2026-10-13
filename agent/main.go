@@ -581,15 +581,19 @@ func originOf(s string) string {
 
 var loginURL = regexp.MustCompile(`https://login\.tailscale\.com/a/[A-Za-z0-9]+`)
 
+// Starts seconds after boot: it doesn't wait for network-online.target (which can hold services back
+// for up to two minutes while the network settles). Readings, history and failures need no network,
+// and the tunnel and dashboard connections retry on their own. After a crash it is back within 2 s and
+// never gives up (StartLimitIntervalSec=0).
 const unitFile = `[Unit]
 Description=Server Pulse agent (vitals for the Server Pulse dashboard)
-After=network-online.target
-Wants=network-online.target
+After=network.target
+StartLimitIntervalSec=0
 
 [Service]
 ExecStart=/usr/local/bin/server-pulse-agent run
 Restart=always
-RestartSec=10
+RestartSec=2
 # least privilege: throwaway user, read-only system, config passed as a credential
 DynamicUser=yes
 # read-only access to the system journal for live logs and failure history
