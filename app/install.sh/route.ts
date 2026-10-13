@@ -5,7 +5,7 @@ import { type NextRequest } from "next/server";
 // It downloads the agent from GitHub Releases, verifies the SHA-256 against the release's SHA256SUMS,
 // installs it as a service and pairs it with this dashboard.
 
-const REPO = "MonoEdge-in/Server-Pulse";
+const REPO = "Rubanzer/Server-Pulse";
 
 export function GET(req: NextRequest) {
   const dashboard = req.nextUrl.origin;
