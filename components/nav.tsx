@@ -70,12 +70,23 @@ export function Nav({ role, email }: { role: Role | null; email: string | null }
   return (
     <header className="sticky top-0 z-40 border-b border-line bg-surface/90 pt-[env(safe-area-inset-top)] backdrop-blur">
       <div className="mx-auto max-w-6xl px-4 sm:px-6 2xl:max-w-[100rem]">
-        <div className="flex h-14 items-center gap-4">
-          <Link href="/" prefetch className="flex shrink-0 items-center gap-2 font-semibold tracking-tight">
-            <svg aria-hidden viewBox="0 0 32 32" className="size-6 text-signal">
-              <path d="M2 17h7l3-8 5 15 4-11 2 4h7" fill="none" stroke="currentColor" strokeWidth="2.6" strokeLinecap="round" strokeLinejoin="round" />
-            </svg>
-            Server Pulse
+        <div className="flex h-14 items-center gap-2 sm:gap-4">
+          <Link href="/" prefetch className="logo-ring shrink-0 outline-none" aria-label="Server Pulse, live overview">
+            <span className="logo-inner flex items-center gap-2 px-3 py-1 font-semibold tracking-tight max-[399px]:px-2">
+              <svg aria-hidden viewBox="0 0 32 32" className="size-6 text-signal">
+                <path
+                  className="logo-pulse"
+                  d="M2 17h7l3-8 5 15 4-11 2 4h7"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2.6"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
+              {/* phones under 400 px: icon only, so the bar (logo, four theme choices, Log out) never overflows */}
+              <span className="max-[399px]:sr-only">Server Pulse</span>
+            </span>
           </Link>
           {/* wide screens: links inline */}
           <div className="hidden min-w-0 flex-1 lg:block">{nav}</div>
