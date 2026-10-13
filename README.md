@@ -55,7 +55,7 @@ Server Pulse has two parts that only talk over one HTTPS link:
 **Highlights**
 
 - 🔗 **One-link setup** — paste `SERVER_URL` into Vercel and the dashboard works.
-- ⚡ **Live** — CPU, RAM, load, disk, network and temperature refresh every 2 s.
+- ⚡ **Live** — CPU, RAM, load, disk, network and temperature every second, streamed straight from your server (no request per reading).
 - 🗄️ **History that outlives the server** — copied nightly into Postgres, 1-minute detail for 30 days and hourly for a year or more.
 - 📊 **Reports** — monthly averages and peaks to decide when to upgrade.
 - 🔔 **Alerts** — Telegram and email the moment a threshold is crossed.
@@ -68,6 +68,7 @@ Server Pulse has two parts that only talk over one HTTPS link:
 - 🖥️ **btop in the browser, done properly**: the Server page shows every core (heatmap with temperatures), memory, disks, network and processes, streamed live every second straight from your server.
 - 🔗 **Add a server with one command**: a one-time code pairs the agent with your dashboard; you approve the server before it's saved.
 - 🧭 **Honest history**: charts cover the range you pick, shade the time before monitoring started, and break at gaps with the reason (server off, agent stopped, filling from server). Every chart shows its coverage; Reports mark months that weren't monitored.
+- 📈 **True peaks at any zoom**: a one-minute spike still shows as the peak on a 1-year view, because every hour keeps its peak minute.
 - 🔁 **Gaps fill themselves**: when the internet, tunnel or dashboard was down but the server kept running, the missing time is copied from the server (it keeps 30 days) on the next sync or as soon as you open the dashboard.
 - 🕰️ **Any time window, everywhere**: History, Logs and Failures share one *From … to …* picker; open a failure to jump to the log lines or the CPU/memory/disk charts around it, and from History to the logs and failures of the same window.
 - 📜 **Live logs and failure history**: the Logs page streams the server's system log live (filter by level, service, text) and keeps every failure (crashes, out-of-memory, failed services, disk errors, CPU/RAM/disk/temperature limits, offline) for 180 days. Secrets are removed on the server before anything is sent.

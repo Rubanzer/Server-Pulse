@@ -3,7 +3,7 @@ import { and, desc, eq, gte, isNotNull, like, lt, lte, sql } from "drizzle-orm";
 import { chunk } from "@/lib/algo";
 import { DEFS, METRICS, type Metric } from "@/lib/charts";
 import { LIMITS, type ServerLink } from "@/lib/config";
-import { affected, db, schema } from "@/lib/db";
+import { affected, db, peakRank, schema } from "@/lib/db";
 import { ENV_SERVER } from "@/lib/db/schema";
 import { pruneEvents, pullAgentEvents, recordEvent } from "@/lib/events";
 import { mailConfigured, sendMail } from "@/lib/mail";
@@ -110,7 +110,11 @@ export async function catchUp(link: ServerLink, deadline: number): Promise<Catch
   return { rows, errors, pending: syncedTo === null || syncedTo < now - 600, syncedTo };
 }
 
-/** HIS-5: atomically replace 1-min / 5-min rows older than 30 days with hourly averages. Whole hours only, all servers. */
+/**
+ * HIS-5: atomically replace 1-min / 5-min rows older than 30 days with hourly rows: the average of
+ * each value, plus the hour's peak minute (whole reading) so long ranges and reports keep true peaks.
+ * Whole hours only, all servers. Hourly rows older than 2 years are dropped (queries stop at 2 years).
+ */
 export async function rollup(): Promise<number> {
   if (!db) return 0;
   const r = await db.execute(sql`
@@ -120,14 +124,21 @@ export async function rollup(): Promise<number> {
         AND ts < date_trunc('hour', now() - make_interval(days => ${LIMITS.rollupAfterDays}))
       RETURNING server_id, chart, ts, "values"
     ), kv AS (
-      SELECT server_id, chart, date_trunc('hour', ts) AS h, kv.key, avg(kv.value::float8) AS v
+      SELECT server_id, chart, date_trunc('hour', ts) AS h, kv.key, round(avg(kv.value::float8)::numeric, 3)::float8 AS v
       FROM old, jsonb_each_text(old."values") kv
       GROUP BY 1, 2, 3, 4
+    ), avgs AS (
+      SELECT server_id, chart, h, jsonb_object_agg(key, v) AS vals FROM kv GROUP BY 1, 2, 3
+    ), pk AS (
+      SELECT DISTINCT ON (server_id, chart, date_trunc('hour', ts)) server_id, chart, date_trunc('hour', ts) AS h, "values" AS peak
+      FROM old
+      ORDER BY server_id, chart, date_trunc('hour', ts), ${peakRank(sql`chart`, sql`"values"`)} DESC NULLS LAST
     )
-    INSERT INTO samples (server_id, chart, ts, "values", resolution_s)
-    SELECT server_id, chart, h, jsonb_object_agg(key, v), 3600 FROM kv GROUP BY server_id, chart, h
+    INSERT INTO samples (server_id, chart, ts, "values", peaks, resolution_s)
+    SELECT a.server_id, a.chart, a.h, a.vals, p.peak, 3600 FROM avgs a JOIN pk p USING (server_id, chart, h)
     ON CONFLICT (server_id, chart, ts, resolution_s) DO NOTHING
   `);
+  await db.execute(sql`DELETE FROM samples WHERE resolution_s >= 3600 AND ts < now() - interval '2 years'`);
   return affected(r);
 }
 

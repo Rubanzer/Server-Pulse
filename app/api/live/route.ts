@@ -54,6 +54,11 @@ export async function GET(req: NextRequest) {
     if (usage?.paused) return Response.json({ mode: "paused", intervalMs: 60_000, tunnel: link.tunnel, usage }, { headers });
   }
   const e = forLink(link);
+  if (req.nextUrl.searchParams.get("lite") === "1") {
+    // the browser is streaming readings straight from the agent: no upstream request, no ngrok budget
+    const inf = await e.info().catch(() => null);
+    return Response.json({ mode: "live", intervalMs: 30_000, tunnel: link.tunnel, info: inf, btopUrl: link.root }, { headers });
+  }
   try {
     const [snap, inf] = await Promise.all([e.snap(), e.info().catch(() => null)]);
     return Response.json(

@@ -54,7 +54,14 @@ function Meter({ value, label }: { value: number; label: string }) {
         <span>{label}</span>
         <span className="font-medium">{pct.toFixed(0)}%</span>
       </div>
-      <div className="mt-1 h-2 overflow-hidden rounded-full bg-paper" role="meter" aria-valuenow={Math.round(pct)} aria-valuemin={0} aria-valuemax={100} aria-label={label}>
+      <div
+        className="mt-1 h-2 overflow-hidden rounded-full bg-paper"
+        role="meter"
+        aria-valuenow={Math.round(pct)}
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-label={label}
+      >
         <div className={`h-full ${cls}`} style={{ width: `${pct}%` }} />
       </div>
     </div>
@@ -159,14 +166,14 @@ export default function SettingsPage() {
       </header>
 
       <div className="grid gap-4 xl:grid-cols-2">
-        <Section title="Server link" desc="The dashboard reads your server through this link. The password is stored encrypted and never shown.">
+        <Section title="Your server" desc="Server Pulse reads your server through its address. The password is stored encrypted and never shown.">
           {s.demo ? (
             <p className="mb-4 text-sm">
-              No server connected, so the dashboard shows demo data. Follow the{" "}
-              <Link href="/setup" className="text-signal underline">
-                server setup guide
+              No server connected yet, so you see demo data.{" "}
+              <Link href="/connect" className="text-signal underline">
+                Add your server
               </Link>{" "}
-              to get your link.
+              with one command.
             </p>
           ) : (
             <dl className="mb-4 grid gap-x-6 gap-y-2 text-sm sm:grid-cols-[max-content_1fr]">
@@ -177,7 +184,9 @@ export default function SettingsPage() {
               {s.linkSource && (
                 <>
                   <dt className="text-muted">Set in</dt>
-                  <dd>{s.linkSource === "settings" ? "Settings (overrides SERVER_URL)" : s.linkSource === "env" ? "Vercel env var SERVER_URL" : "Your account"}</dd>
+                  <dd>
+                    {s.linkSource === "settings" ? "Settings (overrides SERVER_URL)" : s.linkSource === "env" ? "Vercel env var SERVER_URL" : "Your account"}
+                  </dd>
                 </>
               )}
               {s.tunnel && (
@@ -189,6 +198,9 @@ export default function SettingsPage() {
             </dl>
           )}
           <div className="flex flex-wrap gap-2">
+            <Link className={primary} href="/connect">
+              {connected ? "Add or replace server" : "Add server"}
+            </Link>
             <button
               className={btn}
               disabled={!!busy || !connected}
@@ -221,30 +233,40 @@ export default function SettingsPage() {
           </div>
           {test && (
             <p role="status" className={`mt-3 text-sm ${test.ok ? "text-ok" : "text-crit"}`}>
-              {test.ok ? `Connected in ${test.ms} ms: ${test.info?.hostname}, ${test.info?.os}, ${test.info?.netdata ? `version ${test.info.netdata}` : ""}.` : `Connection failed: ${test.error}`}
+              {test.ok
+                ? `Connected in ${test.ms} ms: ${test.info?.hostname}, ${test.info?.os}, ${test.info?.netdata ? `version ${test.info.netdata}` : ""}.`
+                : `Connection failed: ${test.error}`}
             </p>
           )}
-          <div className="mt-5 border-t border-line pt-4">
-            <p className="mb-2 text-sm font-medium">{connected ? "Change link" : "Connect a server"}</p>
-            {s.canSaveLink ? (
-              <LinkForm
-                submitLabel={connected ? "Test and save" : "Test and connect"}
-                onSaved={() => {
-                  setMsg("Link saved. It is used from now on, no redeploy needed.");
-                  load();
-                }}
-              />
-            ) : (
-              <p className="text-xs text-muted">
-                {s.database
-                  ? "Set SERVER_URL or DASHBOARD_PASSWORD in Vercel first, so the demo password stops working. Or create an account."
-                  : "Connect a Neon database to save the link here."}
-              </p>
-            )}
-          </div>
+          {/* the one-command Add server flow is the main path; typing an address is for own tunnels and the classic kit */}
+          <details className="mt-5 border-t border-line pt-4">
+            <summary className="cursor-pointer text-sm font-medium">
+              {connected ? "Advanced: change the address by hand" : "Advanced: enter an address by hand"}
+            </summary>
+            <div className="mt-3">
+              {s.canSaveLink ? (
+                <LinkForm
+                  submitLabel={connected ? "Test and save" : "Test and connect"}
+                  onSaved={() => {
+                    setMsg("Link saved. It is used from now on, no redeploy needed.");
+                    load();
+                  }}
+                />
+              ) : (
+                <p className="text-xs text-muted">
+                  {s.database
+                    ? "Set SERVER_URL or DASHBOARD_PASSWORD in Vercel first, so the demo password stops working. Or create an account."
+                    : "Connect a Neon database to save the link here."}
+                </p>
+              )}
+            </div>
+          </details>
         </Section>
 
-        <Section title="History sync" desc="Every night at 00:15 UTC the last 26 hours are copied into the database. Rows older than 30 days become hourly averages.">
+        <Section
+          title="History sync"
+          desc="Everything the database doesn't have yet is copied from your server (it keeps 30 days): every night, and while you have a page open. Rows older than 30 days become hourly averages that keep each hour's peak."
+        >
           <div className="flex flex-wrap gap-2">
             <button
               className={primary}
@@ -265,7 +287,9 @@ export default function SettingsPage() {
           </div>
           {!s.database && <p className="mt-3 text-sm text-warn">No database connected. In Vercel: Storage → Create Database → Neon, then redeploy.</p>}
           {s.pending && s.database && (
-            <p className="mt-3 text-sm text-muted">Some history hasn&apos;t been copied from your server yet. It fills in by itself while a page is open, or press Fill missing history.</p>
+            <p className="mt-3 text-sm text-muted">
+              Some history hasn&apos;t been copied from your server yet. It fills in by itself while a page is open, or press Fill missing history.
+            </p>
           )}
           {s.runs.length > 0 && (
             <div className="-mx-4 mt-4 overflow-x-auto px-4 sm:mx-0 sm:px-0">
@@ -284,7 +308,9 @@ export default function SettingsPage() {
                     <tr key={r.id} className="border-b border-line align-top last:border-0">
                       <td className="whitespace-nowrap py-2 pr-3">{new Date(r.startedAt).toLocaleString()}</td>
                       <td className="py-2 pr-3">{r.kind === "backfill" ? "Catch-up" : "Sync"}</td>
-                      <td className={`py-2 pr-3 font-medium ${r.status === "ok" ? "text-ok" : r.status ? "text-crit" : "text-muted"}`}>{r.status ?? "running"}</td>
+                      <td className={`py-2 pr-3 font-medium ${r.status === "ok" ? "text-ok" : r.status ? "text-crit" : "text-muted"}`}>
+                        {r.status ?? "running"}
+                      </td>
                       <td className="py-2 pr-3 text-right">{r.rowsInserted ?? "—"}</td>
                       <td className="py-2 text-xs text-muted">{r.error}</td>
                     </tr>

@@ -36,5 +36,21 @@ export function mergeFrame(prev: PulseFrame | null, next: PulseFrame): PulseFram
   };
 }
 
+/** A pulse frame as Live-page readings (same keys and units as derive() on Netdata charts). */
+export function frameValues(f: PulseFrame): Record<string, Record<string, number>> {
+  const root = f.disks?.find((d) => d.path === "/") ?? f.disks?.[0];
+  const temps = [...(f.cpu.temps ?? []), f.cpu.pkg ?? 0].filter((x) => x > 0);
+  const out: Record<string, Record<string, number>> = {
+    cpu: { cpu: f.cpu.total },
+    ram: { pct: f.mem.total ? Math.round((1000 * f.mem.used) / f.mem.total) / 10 : 0, usedGiB: Math.round((100 * f.mem.used) / 1024) / 100 },
+    load: { load1: f.load[0], load5: f.load[1], load15: f.load[2] },
+    io: { read: f.io.reduce((a, d) => a + d.r, 0), write: f.io.reduce((a, d) => a + d.w, 0) },
+    net: { in: f.net.reduce((a, n) => a + n.in, 0), out: f.net.reduce((a, n) => a + n.out, 0) },
+  };
+  if (root) out.disk = { pct: root.size ? Math.round((1000 * root.used) / root.size) / 10 : 0, usedGiB: Math.round((100 * root.used) / 1024) / 100 };
+  if (temps.length) out.temp = { max: Math.max(...temps) };
+  return out;
+}
+
 /** Stream tokens: v1.<exp>.<nonce>.<sig>; must match agent/stream.go (verifyToken). */
 export const STREAM_KEY_LABEL = "server-pulse stream v1";

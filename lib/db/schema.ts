@@ -30,6 +30,8 @@ export const samples = pgTable(
     ts: timestamp("ts", { withTimezone: true }).notNull(),
     /** Raw Netdata dimensions, e.g. { "user": 3.1, "system": 1.2 }. */
     values: jsonb("values").$type<Record<string, number>>().notNull(),
+    /** Hourly rows only: the hour's peak minute (whole reading), so long ranges keep true peaks. */
+    peaks: jsonb("peaks").$type<Record<string, number>>(),
     resolutionS: integer("resolution_s").notNull(),
   },
   // The unique index also serves every (server, chart, ts) range scan, so no separate index is needed.

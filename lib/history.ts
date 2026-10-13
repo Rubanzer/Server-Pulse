@@ -3,7 +3,7 @@ import { like, sql } from "drizzle-orm";
 import { bucketStep, coverage, findGaps, gapReason, type Gap, type RunInfo } from "@/lib/algo";
 import { derive, METRICS, type Dims, type Metric, type Point } from "@/lib/charts";
 import { LIMITS } from "@/lib/config";
-import { db, schema } from "@/lib/db";
+import { db, peakRank, schema } from "@/lib/db";
 import { demoSeries } from "@/lib/demo";
 import { series, type RawPoint } from "@/lib/netdata";
 import { getLink, getSetting, k } from "@/lib/settings";
@@ -23,7 +23,7 @@ export type History = {
 };
 export type HistoryResult = History | { error: string };
 
-type Bucketed = RawPoint & { r: number };
+type Bucketed = RawPoint & { r: number; pk?: RawPoint["d"] };
 
 /**
  * ≈500 buckets for several charts in ONE query. Averages are weighted by resolution, so buckets that
@@ -44,6 +44,26 @@ async function fromDb(sid: string, metrics: readonly Metric[], from: number, to:
     )}) AND s.ts >= to_timestamp(${from}) AND s.ts < to_timestamp(${to})
     GROUP BY 1, 2, 3
     ORDER BY 1, 2`);
+  // each bucket's peak reading: the hourly rows' kept peak minute, or the highest minute row
+  const peaks =
+    step > 60
+      ? await db!.execute(sql`
+          SELECT DISTINCT ON (c, b) c, b, pk FROM (
+            SELECT s.chart AS c,
+                   extract(epoch FROM date_bin(make_interval(secs => ${step}), s.ts, timestamptz 'epoch'))::bigint AS b,
+                   coalesce(s.peaks, s."values") AS pk
+            FROM samples s
+            WHERE s.server_id = ${sid} AND s.chart IN (${sql.join(
+              metrics.map((m) => sql`${m}`),
+              sql`, `,
+            )}) AND s.ts >= to_timestamp(${from}) AND s.ts < to_timestamp(${to})
+          ) x
+          ORDER BY c, b, ${peakRank(sql`c`, sql`pk`)} DESC NULLS LAST`)
+      : null;
+  const peakOf = new Map<string, Record<string, number>>();
+  for (const row of (peaks?.rows ?? []) as { c: string; b: string; pk: Record<string, number> | string }[])
+    peakOf.set(`${row.c}|${row.b}`, typeof row.pk === "string" ? JSON.parse(row.pk) : row.pk);
+
   // rows arrive ordered by chart then bucket, so pivoting is one linear pass
   const out = new Map<Metric, Bucketed[]>();
   let cur: Bucketed | undefined;
@@ -51,7 +71,7 @@ async function fromDb(sid: string, metrics: readonly Metric[], from: number, to:
     const t = Number(row.b);
     let list = out.get(row.c);
     if (!list) out.set(row.c, (list = []));
-    if (!cur || cur.t !== t || list[list.length - 1] !== cur) list.push((cur = { t, d: {}, r: Number(row.r) }));
+    if (!cur || cur.t !== t || list[list.length - 1] !== cur) list.push((cur = { t, d: {}, r: Number(row.r), pk: peakOf.get(`${row.c}|${t}`) }));
     cur.d[row.k] = Number(row.v);
   }
   return out;
@@ -103,7 +123,7 @@ async function agentFacts(sid: string): Promise<{ oldest: number | null; runs: R
 /** Points → display values with a null point inside each gap, the labelled gaps and the coverage. */
 function finish(
   metric: Metric,
-  raw: (RawPoint & { r?: number })[],
+  raw: (RawPoint & { r?: number; pk?: RawPoint["d"] })[],
   o: {
     from: number;
     to: number;
@@ -140,7 +160,7 @@ function finish(
   let gi = 0;
   for (const p of raw) {
     while (gi < gaps.length && gaps[gi]!.to <= p.t) points.push({ t: Math.round((gaps[gi]!.from + gaps[gi++]!.to) / 2), v: blank });
-    points.push({ t: p.t, v: derive(metric, p.d) });
+    points.push(p.pk ? { t: p.t, v: derive(metric, p.d), pk: derive(metric, p.pk) } : { t: p.t, v: derive(metric, p.d) });
   }
   while (gi < gaps.length) points.push({ t: Math.round((gaps[gi]!.from + gaps[gi++]!.to) / 2), v: blank });
   points.sort((a, b) => a.t - b.t);

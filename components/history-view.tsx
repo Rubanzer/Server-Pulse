@@ -181,7 +181,12 @@ const HistoryCard = memo(function HistoryCard({
   const series = useMemo(() => DEFS[m].series.filter((s) => s.key !== "usedGiB"), [m]);
   const pts = r && "points" in r ? r.points : EMPTY;
   const first = series[0]!;
-  const st = useMemo(() => stats(pts.map((p) => p.v[first.key] ?? NaN)), [pts, first.key]);
+  const st = useMemo(() => {
+    const s = stats(pts.map((p) => p.v[first.key] ?? NaN));
+    // long ranges average many readings per point: the true peak is the highest kept peak reading
+    const peak = pts.reduce((m, p) => Math.max(m, p.pk?.[first.key] ?? p.v[first.key] ?? -Infinity), -Infinity);
+    return s && Number.isFinite(peak) ? { ...s, peak: Math.max(s.peak, peak) } : s;
+  }, [pts, first.key]);
   return (
     <article id={m} className="scroll-mt-28 rounded-xl border border-line bg-surface p-4">
       <header className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
