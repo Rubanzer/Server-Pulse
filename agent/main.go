@@ -48,6 +48,8 @@ type Config struct {
 	Origins   []string `json:"origins,omitempty"`   // dashboard origins allowed to stream (empty = any; the token authorizes)
 	ShowArgs  bool     `json:"showArgs,omitempty"`  // include scrubbed command lines in the process list
 	PublicURL string   `json:"publicUrl,omitempty"` // your own tunnel (e.g. ngrok) pointing at 127.0.0.1:19998
+	// Funnel port this agent turned on in the machine's own Tailscale (undone on uninstall); 0 = none
+	FunnelPort int `json:"funnelPort,omitempty"`
 }
 
 func main() {
@@ -390,8 +392,19 @@ func cmdInstall(args []string) error {
 		if u := detectNgrok(); u != "" {
 			step("Found your ngrok tunnel at " + u + ": using it (no Tailscale needed)")
 			cfg.PublicURL, cfg.Tunnel = u, false
-		} else if cfg.PublicURL != "" {
-			cfg.Tunnel = false // a tunnel saved by an earlier install
+			stopSystemFunnel(cfg.FunnelPort) // switched away from Funnel: don't leave a second public address
+			cfg.FunnelPort = 0
+		} else if u, note, port := systemTailscale(); u != "" {
+			// Tailscale already logged in on this machine: publish through it, no second login
+			step("Found Tailscale on this machine: publishing the agent with Funnel at " + u)
+			cfg.PublicURL, cfg.Tunnel, cfg.FunnelPort = u, false, port
+		} else {
+			if note != "" {
+				fmt.Println("! " + note + ".")
+			}
+			if cfg.PublicURL != "" {
+				cfg.Tunnel = false // a tunnel saved by an earlier install
+			}
 		}
 	}
 	if *pair != "" && len(cfg.Origins) == 0 {
@@ -603,6 +616,7 @@ func cmdUninstall(args []string) error {
 	}
 	cfg, _ := loadConfig(configPath)
 	run("systemctl", "disable", "--now", "server-pulse-agent")
+	stopSystemFunnel(cfg.FunnelPort)
 	os.Remove(unitPath)
 	run("systemctl", "daemon-reload")
 	if cfg.KeepAwake {

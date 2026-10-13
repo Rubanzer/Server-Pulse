@@ -92,6 +92,10 @@ The agent speaks the same API as Netdata (`/api/v1/info`, `allmetrics`, `data`, 
 
 History: 1-second detail for the last hour and 1-minute averages for 30 days, about 9 MB in memory. The 30-day tier is saved to `/var/lib/private/server-pulse/history.gob` every 5 minutes and on shutdown, so reboots keep it.
 
+## Already using Tailscale?
+
+If Tailscale is installed and logged in on the server, `install` publishes the agent through it with Funnel (port 443, or 8443 / 10000 if 443 is in use by something else) — no second login. `uninstall` turns off only that port.
+
 ## Using ngrok
 
 If ngrok already forwards to this agent (`ngrok http 19998`), `install` finds the tunnel by itself and uses it: no Tailscale, nothing to type. You can also name it: `install … --public-url https://your-name.ngrok-free.dev`.
