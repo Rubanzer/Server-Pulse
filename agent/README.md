@@ -25,6 +25,8 @@ It downloads this agent from GitHub Releases, checks its SHA-256, installs it, s
 
 The agent also streams the live **Server** view: `GET /api/v1/pulse/stream` (1 frame/s, gzip NDJSON, 60-s single-use token from the dashboard in the `Authorization` header) and `GET /api/v1/pulse` (one frame, basic auth). Process command lines are hidden unless you install with `--show-args`.
 
+**Is the dashboard able to reach it?** `sudo server-pulse-agent status` checks the whole path from the internet side and says what to look at if it fails. When the agent is published through this machine's own Tailscale, a small watchdog (`server-pulse-funnel.timer`, every 10 minutes) turns its Funnel on again if it ever disappears, and reports problems in the Failures list (to keep Funnel off on purpose: `sudo systemctl disable --now server-pulse-funnel.timer`).
+
 ## Set up by hand (about 5 minutes)
 
 **1. Prepare Tailscale (once, in the browser)**

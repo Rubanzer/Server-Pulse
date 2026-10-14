@@ -67,3 +67,23 @@ export function guardedGet(url: string, headers: Record<string, string>, o: Opts
     req.end();
   });
 }
+
+/**
+ * A connection that failed before any answer, in plain words with the one thing to check for the tunnel
+ * in use. The raw code stays at the end for searching.
+ */
+export function unreachable(host: string, code: string): string {
+  const cut = /ECONNRESET|EPIPE|ECONNABORTED|EPROTO|ERR_SSL|socket hang up|disconnected before secure TLS/i.test(code);
+  const funnel = /\.ts\.net(:\d+)?$/i.test(host);
+  const ngrok = /\.ngrok/i.test(host);
+  let why: string;
+  if (cut && funnel)
+    why = `Tailscale Funnel isn't passing connections to your server (it cut the connection before your server answered). On the server, "tailscale funnel status" should show ${host} (Funnel on) → 127.0.0.1:19998, and "sudo server-pulse-agent status" checks the whole path.`;
+  else if (cut && ngrok) why = `ngrok cut the connection before your server answered. On the server, ngrok must be running and pointing at 127.0.0.1:19998.`;
+  else if (cut) why = `the connection to ${host} was cut before your server answered: the tunnel or proxy isn't forwarding to 127.0.0.1:19998.`;
+  else if (/ENOTFOUND|EAI_AGAIN/i.test(code)) why = `${host} doesn't exist in public DNS. Check the address, or run the Add server command again.`;
+  else if (/ECONNREFUSED/i.test(code)) why = `nothing accepts connections at ${host}.`;
+  else if (/ENETUNREACH|EHOSTUNREACH/i.test(code)) why = `${host} can't be reached from the internet right now.`;
+  else return `Cannot reach ${host}: ${code}`;
+  return `Cannot reach ${host}: ${why} (${code})`;
+}

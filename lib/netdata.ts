@@ -4,7 +4,7 @@ import { mergeMax } from "@/lib/algo";
 import { DEFS, derive, isTempContext, METRICS, type Dims, type Metric } from "@/lib/charts";
 import { LIMITS, type ServerLink } from "@/lib/config";
 import { isPrivateAddress } from "@/lib/crypto";
-import { guardedGet } from "@/lib/guarded-get";
+import { guardedGet, unreachable } from "@/lib/guarded-get";
 import { invalidateLink } from "@/lib/settings";
 import { countRequest } from "@/lib/usage";
 
@@ -67,7 +67,7 @@ async function get<T>(link: ServerLink, path: string, schema: z.ZodType<T>): Pro
     if (err.name === "TimeoutError") throw new NetdataError(`Timed out after ${LIMITS.requestTimeoutMs / 1000} s — server or tunnel is down`);
     if (err.code === "EPRIVATE") throw new NetdataError(`${link.host} points to a private network address; use your public tunnel link`);
     if (err.code === "ETOOBIG") throw new NetdataError(`${link.host} sent an unexpectedly large response`);
-    throw new NetdataError(`Cannot reach ${link.host}: ${err.code ?? err.cause?.code ?? err.cause?.message ?? err.message}`);
+    throw new NetdataError(unreachable(link.host, String(err.code ?? err.cause?.code ?? err.cause?.message ?? err.message)));
   }
   if (guarded && status >= 300 && status < 400) throw new NetdataError(`${link.host} tried to redirect; use the final link directly`);
   if (status < 200 || status >= 300) {
