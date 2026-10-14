@@ -635,7 +635,7 @@ Six reviewers (runtime smoothness, measured in a browser at 1× and 4× CPU; vis
   - The live numbers are written once per reading. The old 250 ms ease forced about 15 page layouts per update, which measured 50–70 ms frames at 4× CPU.
   - History draws its charts by hand instead of with Recharts. Recharts rendered synchronously, freezing the page for 0.25 s on open and over 1 s on a TV-class CPU; it is removed from the project.
   - The Server page's core map is a single canvas instead of 128 DOM cells, removing 250–330 ms of style and layout per update at 4×.
-  - The logo's light makes three laps after a page loads and then rests (it kept the GPU busy on every page).
+  - The logo's golden light runs all the time (owner's choice); it is compositor-only and stops in background tabs and under "reduce motion".
   - The header no longer blurs what scrolls under it.
   - Theme switches skip per-element colour transitions, since the cross-fade already animates the change.
   - Number and date formatters are created once instead of on every call.
