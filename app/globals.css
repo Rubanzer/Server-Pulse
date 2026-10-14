@@ -211,11 +211,9 @@ body {
     var(--gold-2) 352deg,
     transparent 360deg
   );
-  /* three laps (about 13 s) after each page load, then it rests as a gold outline: a light that runs
-     forever kept the GPU busy on every page (measured ~1/3 of a GPU core on a TV). Hover/focus runs it again. */
-  animation:
-    logo-trace var(--trace-speed) linear 3,
-    logo-rest 0.8s ease-out calc(var(--trace-speed) * 3 - 0.8s) forwards;
+  /* runs all the time (the owner's choice). Compositor-only (transform), so no main-thread work per frame;
+     it stops in background tabs and under "reduce motion". */
+  animation: logo-trace var(--trace-speed) linear infinite;
   will-change: transform;
 }
 .logo-ring > .logo-inner {
@@ -231,15 +229,6 @@ body {
   }
 }
 /* interactive: faster trace, warm glow, the pulse line re-draws itself */
-.logo-ring:hover::before,
-.logo-ring:focus-visible::before {
-  animation: logo-trace var(--trace-speed) linear infinite;
-}
-@keyframes logo-rest {
-  to {
-    opacity: 0;
-  }
-}
 .logo-ring:hover,
 .logo-ring:focus-visible {
   --trace-speed: 1.6s;
