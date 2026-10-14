@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import { hardNavigate } from "@/lib/navigate";
+import { toLogin } from "@/lib/navigate";
 
 /**
  * LIV-3: polls `url` every `intervalMs`, only while the tab is visible; refetches immediately on focus.
@@ -12,7 +12,11 @@ import { hardNavigate } from "@/lib/navigate";
 export function usePoll<T>(
   url: string,
   intervalMs: number,
-  opts: { nextInterval?: (data: T) => number; onData?: (data: T) => void; initial?: T | null } = {},
+  opts: {
+    nextInterval?: (data: T) => number;
+    onData?: (data: T) => void;
+    initial?: T | null;
+  } = {},
 ) {
   const [data, setData] = useState<T | null>(opts.initial ?? null);
   const [error, setError] = useState<string | null>(null);
@@ -34,9 +38,12 @@ export function usePoll<T>(
       ctrl = new AbortController();
       const started = performance.now();
       try {
-        const res = await fetch(url, { signal: ctrl.signal, cache: "no-store" });
+        const res = await fetch(url, {
+          signal: ctrl.signal,
+          cache: "no-store",
+        });
         if (res.status === 401) {
-          hardNavigate("/login"); // session expired
+          toLogin(); // session expired: log in and come back here
           return;
         }
         const body = (await res.json()) as T & { error?: string };
@@ -50,7 +57,11 @@ export function usePoll<T>(
         setError((e as Error).message);
         wait = Math.min(wait * 2, 30_000); // back off while the app itself is unreachable
       }
-      if (!stopped && !document.hidden) timer = setTimeout(tick, Math.max(0, wait - (performance.now() - started)));
+      if (!stopped && !document.hidden)
+        timer = setTimeout(
+          tick,
+          Math.max(0, wait - (performance.now() - started)),
+        );
     }
 
     const onVisible = () => {

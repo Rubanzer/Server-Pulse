@@ -17,7 +17,13 @@ function Pending() {
   );
 }
 
-export function Nav({ role, email }: { role: Role | null; email: string | null }) {
+export function Nav({
+  role,
+  email,
+}: {
+  role: Role | null;
+  email: string | null;
+}) {
   const path = usePathname();
   const links = role
     ? [
@@ -36,7 +42,6 @@ export function Nav({ role, email }: { role: Role | null; email: string | null }
     : [
         { href: "/login", label: "Log in" },
         { href: "/signup", label: "Create account" },
-        { href: "/setup", label: "Server setup" },
       ];
 
   async function logout() {
@@ -46,7 +51,7 @@ export function Nav({ role, email }: { role: Role | null; email: string | null }
 
   const nav = (
     <nav
-      className="no-scrollbar -mx-1 flex items-center gap-1 overflow-x-auto text-sm max-lg:pr-6 max-lg:[mask-image:linear-gradient(to_right,#000_calc(100%-2rem),transparent)]"
+      className="no-scrollbar -mx-1 -my-1 flex items-center gap-1 overflow-x-auto py-1 text-sm max-lg:pr-6 max-lg:[mask-image:linear-gradient(to_right,#000_calc(100%-2rem),transparent)]"
       aria-label="Main"
     >
       {links.map((l) => {
@@ -57,6 +62,13 @@ export function Nav({ role, email }: { role: Role | null; email: string | null }
             href={l.href}
             prefetch // full prefetch: every page is ready before it's clicked
             aria-current={active ? "page" : undefined}
+            // phones: the nav row scrolls; keep the current page's tab in view
+            ref={
+              active
+                ? (el) =>
+                    el?.scrollIntoView({ inline: "nearest", block: "nearest" })
+                : undefined
+            }
             className={`relative inline-flex items-center whitespace-nowrap rounded-md px-2.5 py-1.5 transition-colors ${active ? "bg-paper font-medium text-ink" : "text-muted hover:text-ink"}`}
           >
             {l.label}
@@ -68,12 +80,21 @@ export function Nav({ role, email }: { role: Role | null; email: string | null }
   );
 
   return (
-    <header className="sticky top-0 z-40 border-b border-line bg-surface/90 pt-[env(safe-area-inset-top)] backdrop-blur">
-      <div className="mx-auto max-w-6xl px-4 sm:px-6 2xl:max-w-[100rem]">
+    <header className="sticky top-0 z-40 [@media(max-height:30rem)]:static border-b border-line bg-surface pt-[env(safe-area-inset-top)]">
+      <div className="mx-auto max-w-6xl px-4 sm:px-6 2xl:max-w-[100rem] min-[2200px]:max-w-[140rem]">
         <div className="flex h-14 items-center gap-2 sm:gap-4">
-          <Link href="/" prefetch className="logo-ring shrink-0 outline-none" aria-label="Server Pulse, live overview">
+          <Link
+            href="/"
+            prefetch
+            className="logo-ring shrink-0"
+            aria-label="Server Pulse, live overview"
+          >
             <span className="logo-inner flex items-center gap-2 px-3 py-1 font-semibold tracking-tight max-[399px]:px-2">
-              <svg aria-hidden viewBox="0 0 32 32" className="size-6 text-signal">
+              <svg
+                aria-hidden
+                viewBox="0 0 32 32"
+                className="size-6 text-signal"
+              >
                 <path
                   className="logo-pulse"
                   d="M2 17h7l3-8 5 15 4-11 2 4h7"
@@ -92,13 +113,19 @@ export function Nav({ role, email }: { role: Role | null; email: string | null }
           <div className="hidden min-w-0 flex-1 lg:block">{nav}</div>
           <div className="ml-auto flex shrink-0 items-center gap-1">
             {email && (
-              <span className="hidden max-w-[14rem] truncate text-sm text-muted xl:inline" title={email}>
+              <span
+                className="hidden max-w-[14rem] truncate text-sm text-muted xl:inline"
+                title={email}
+              >
                 {email}
               </span>
             )}
             <ThemeToggle />
             {role && (
-              <button onClick={logout} className="rounded-md px-2.5 py-1.5 text-sm text-muted hover:bg-paper hover:text-ink">
+              <button
+                onClick={logout}
+                className="rounded-md px-2.5 py-1.5 text-sm text-muted hover:bg-paper hover:text-ink"
+              >
                 Log out
               </button>
             )}
