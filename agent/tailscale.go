@@ -167,6 +167,7 @@ func firstLine(s string) string {
 	if i := strings.IndexByte(s, '\n'); i >= 0 {
 		s = s[:i]
 	}
+	s = strings.TrimSpace(cleanLine(s)) // no control characters from another program reach the terminal
 	if len(s) > 160 {
 		s = s[:160] + "…"
 	}

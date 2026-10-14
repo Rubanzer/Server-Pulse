@@ -676,3 +676,20 @@ Six reviewers (runtime smoothness, measured in a browser at 1× and 4× CPU; vis
   - Charts have text alternatives and keyboard stepping.
   - Pairing and settings errors are announced.
 - **Agent (installer)**: when Tailscale needs Funnel allowed for the first time, the installer prints the link straight away and waits up to 10 minutes. Before, it waited silently for 30 seconds.
+
+### Update: the public address is checked before pairing (agent 1.3.3)
+Found on the owner's server: Tailscale Funnel stopped passing connections. The TLS handshake was reset at Tailscale's public entry point on ports 443, 8443 and 10000, so the dashboard only showed `Cannot reach antpc.….ts.net: ECONNRESET`.
+- **Installer**
+  - It now calls its own public address the way the dashboard will, before pairing. It waits up to 90 s, because a new Funnel address gets its certificate on the first request.
+  - Pairing goes ahead either way, at most about 2 minutes later, well inside the code's 10 minutes.
+  - If the address still fails, it says why in plain words (connection cut, name not in DNS, refused, timeout). It then lists read-only checks for the tunnel in use: `tailscale status`, `tailscale funnel status` (the current lines are printed), or the ngrok command.
+- **`server-pulse-agent status`** (with sudo) runs the same check, so one command shows whether the dashboard can reach the server.
+- **Funnel watchdog** (`server-pulse-funnel.timer`, root, every 10 minutes). It is installed only when the agent is published through this machine's own Tailscale.
+  - If the agent's Funnel is missing and its port is free, it turns it on again (e.g. after `tailscale serve reset`, `tailscale up --reset` or a Tailscale reinstall).
+  - It never takes a port another service uses.
+  - If the public address doesn't reach the agent, it writes one plain error line to the system journal, which the agent turns into a Failures entry. Examples: Tailscale logged out, the machine renamed, the port taken.
+  - It never restarts, updates or reconfigures anything else. Uninstall removes it.
+  - To keep Funnel off on purpose: `sudo systemctl disable --now server-pulse-funnel.timer`.
+  - It runs as root, so it is only installed when the agent binary and its folder can't be changed by other users. The unit has a fixed PATH, `NoNewPrivileges`, `PrivateTmp` and `ProtectHome`.
+- **Dashboard:** connection errors are worded per tunnel with the one thing to check (Funnel, ngrok, DNS, refused). The raw code stays at the end, e.g. `(ECONNRESET)`.
+- **Safety:** anything printed from another program passes through a filter that drops control characters, so no terminal escape sequences get through.

@@ -71,6 +71,8 @@ func main() {
 		err = cmdStatus()
 	case "link":
 		err = cmdLink()
+	case "funnel-check": // run by server-pulse-funnel.timer (root)
+		err = cmdFunnelCheck()
 	case "version", "--version", "-v":
 		fmt.Println("server-pulse-agent", version)
 	default:
@@ -435,6 +437,7 @@ func cmdInstall(args []string) error {
 	}
 	// whatever this install chose (--public-url, --no-tunnel, ngrok, another Funnel port), the agent
 	// must not stay published at an address it no longer uses
+	stopFunnelCheck() // no watchdog run may put the old Funnel back while it's being changed
 	if oldFunnel != 0 && oldFunnel != cfg.FunnelPort {
 		stopSystemFunnel(oldFunnel)
 	}
@@ -502,6 +505,13 @@ func cmdInstall(args []string) error {
 		return err
 	}
 
+	// published through this machine's Tailscale: a watchdog keeps that Funnel in place
+	if cfg.FunnelPort != 0 {
+		setupFunnelCheck()
+	} else {
+		removeFunnelCheck()
+	}
+
 	var host string
 	switch {
 	case cfg.PublicURL != "":
@@ -539,6 +549,10 @@ func cmdInstall(args []string) error {
 		return nil
 	}
 	link := "https://" + dashUser + ":" + cfg.Password + "@" + host + "/history"
+	// call the public address the way the dashboard will, before handing it over
+	pub := cfg
+	pub.PublicURL = "https://" + host
+	checkPublic(pub)
 	if *pair != "" {
 		step("Connecting this server to your dashboard")
 		if err := pairWithDashboard(cfg.Origins[0], *pair, link); err != nil {
@@ -651,6 +665,7 @@ func cmdUninstall(args []string) error {
 	}
 	cfg, _ := loadConfig(configPath)
 	run("systemctl", "disable", "--now", "server-pulse-agent")
+	removeFunnelCheck() // first: a check in progress must not turn the Funnel back on
 	stopSystemFunnel(cfg.FunnelPort)
 	removeNgrokService()
 	os.Remove(unitPath)
@@ -683,6 +698,11 @@ func cmdStatus() error {
 		fmt.Println("agent:   not answering on", localAddr)
 		return nil
 	}
+	for k, v := range st { // a local port can be answered by anything when the agent is down: print clean text only
+		if s, ok := v.(string); ok {
+			st[k] = cleanLine(s)
+		}
+	}
 	fmt.Printf("agent:   %v\ntunnel:  %v\n", st["version"], st["tunnel"])
 	if d, _ := st["domain"].(string); d != "" {
 		fmt.Printf("link:    https://%s  (sudo server-pulse-agent link shows it with the password)\n", d)
@@ -692,6 +712,30 @@ func cmdStatus() error {
 	}
 	if e, _ := st["error"].(string); e != "" {
 		fmt.Printf("problem: %s\n", e)
+	}
+	// the address the dashboard uses, checked from the internet side (the config is readable with sudo)
+	pub := ""
+	if d, _ := st["domain"].(string); d != "" {
+		pub = "https://" + d
+	}
+	cfg, cfgErr := loadConfig(configPath)
+	if cfgErr == nil && cfg.PublicURL != "" {
+		pub = cfg.PublicURL
+	}
+	if pub != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
+		defer cancel()
+		if err := probePublic(ctx, pub); err == nil {
+			fmt.Printf("public:  %s answers from the internet ✓\n", pub)
+		} else {
+			fmt.Printf("public:  %s doesn't reach the agent: %s\n", pub, plainNetErr(err))
+			cfg.PublicURL = pub
+			for _, l := range reachHints(cfg) {
+				fmt.Println("         " + l)
+			}
+		}
+	} else if cfgErr != nil {
+		fmt.Println("public:  run with sudo to also check the public address")
 	}
 	return nil
 }

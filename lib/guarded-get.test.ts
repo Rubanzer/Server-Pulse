@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { createServer, request } from "node:http";
 import type { AddressInfo } from "node:net";
 import { isPrivateAddress } from "./crypto.ts";
-import { guardedGet } from "./guarded-get.ts";
+import { guardedGet, unreachable } from "./guarded-get.ts";
 
 // local plain-http server; the address filter is relaxed so tests can reach 127.0.0.1
 function serve(handler: Parameters<typeof createServer>[1]) {
@@ -66,4 +66,14 @@ test("private addresses are refused, by DNS name and by literal", async () => {
   await assert.rejects(guardedGet("http://localhost:9/", {}, strict), { code: "EPRIVATE" });
   await assert.rejects(guardedGet("http://127.0.0.1:9/", {}, strict), { code: "EPRIVATE" });
   await assert.rejects(guardedGet("http://[::1]:9/", {}, strict), { code: "EPRIVATE" });
+});
+
+test("connection errors say what to check, per tunnel", () => {
+  const funnel = unreachable("antpc.taild51270.ts.net", "ECONNRESET");
+  assert.match(funnel, /Tailscale Funnel isn't passing connections/);
+  assert.match(funnel, /tailscale funnel status/);
+  assert.match(funnel, /\(ECONNRESET\)$/);
+  assert.match(unreachable("bunch.ngrok-free.dev", "ECONNRESET"), /ngrok cut the connection/);
+  assert.match(unreachable("x.example.com", "ENOTFOUND"), /doesn't exist in public DNS/);
+  assert.equal(unreachable("x.example.com", "EWEIRD"), "Cannot reach x.example.com: EWEIRD");
 });
