@@ -3,8 +3,12 @@ import { guard } from "@/lib/auth";
 import { demoLogs, demoRangeLogs } from "@/lib/demo";
 import { agentLogs, NetdataError } from "@/lib/netdata";
 import { getLink } from "@/lib/settings";
+import { getUsage } from "@/lib/usage";
 
 export const dynamic = "force-dynamic";
+
+const PAUSED =
+  "Live updates are paused to save this month's ngrok requests (80% used). They resume next month, or switch to Tailscale for no limit.";
 
 /**
  * Owner only. Recent lines after a cursor (fallback when the browser can't stream from the agent), or a
@@ -16,28 +20,69 @@ export async function GET(req: NextRequest) {
   const q = req.nextUrl.searchParams;
   const prio = Math.min(7, Math.max(0, Number(q.get("prio") ?? 6) || 6));
   const unit = q.get("unit") ?? "";
-  if (unit && !/^[A-Za-z0-9@:._-]{1,100}$/.test(unit)) return Response.json({ error: "Invalid service name" }, { status: 400 });
+  if (unit && !/^[A-Za-z0-9@:._-]{1,100}$/.test(unit))
+    return Response.json({ error: "Invalid service name" }, { status: 400 });
   const exclude = (q.get("exclude") ?? "").split(",").filter(Boolean);
-  if (exclude.length > 20 || exclude.some((u) => !/^[A-Za-z0-9@:._-]{1,100}$/.test(u))) return Response.json({ error: "Invalid service to hide" }, { status: 400 });
+  if (
+    exclude.length > 20 ||
+    exclude.some((u) => !/^[A-Za-z0-9@:._-]{1,100}$/.test(u))
+  )
+    return Response.json({ error: "Invalid service to hide" }, { status: 400 });
   const quiet = q.get("quiet") === "1";
   const after = q.get("after") ?? "";
-  if (after.length > 300) return Response.json({ error: "Invalid cursor" }, { status: 400 });
+  if (after.length > 300)
+    return Response.json({ error: "Invalid cursor" }, { status: 400 });
   const since = Math.floor(Number(q.get("since"))) || 0;
   const until = Math.floor(Number(q.get("until"))) || 0;
-  if (since < 0 || until < 0 || (since && until && until <= since)) return Response.json({ error: "Pick an end time after the start time." }, { status: 400 });
+  if (since < 0 || until < 0 || (since && until && until <= since))
+    return Response.json(
+      { error: "Pick an end time after the start time." },
+      { status: 400 },
+    );
   const { link, demo, error } = await getLink(s.sid);
-  if (demo) return Response.json(since ? demoRangeLogs(since, until, after) : demoLogs(after), { headers: { "cache-control": "no-store" } });
-  if (!link) return Response.json({ error: error ?? "Connect a server first" }, { status: 400 });
+  if (demo)
+    return Response.json(
+      since ? demoRangeLogs(since, until, after) : demoLogs(after),
+      { headers: { "cache-control": "no-store" } },
+    );
+  if (!link)
+    return Response.json(
+      { error: error ?? "Connect a server first" },
+      { status: 400 },
+    );
+  // live polling stops at the 80% ngrok pause like the Live page; looking up a past window still works
+  if (!since && (await getUsage(link.sid).catch(() => null))?.paused)
+    return Response.json({ error: PAUSED, paused: true }, { status: 429 });
   try {
-    const r = await agentLogs(link, { after: after || undefined, prio, unit: unit || undefined, n: since || after ? 500 : 200, since, until, exclude: exclude.join(",") || undefined, quiet });
+    const r = await agentLogs(link, {
+      after: after || undefined,
+      prio,
+      unit: unit || undefined,
+      n: since || after ? 500 : 200,
+      since,
+      until,
+      exclude: exclude.join(",") || undefined,
+      quiet,
+    });
     if (since && !r.range)
       // an agent from before time ranges ignores since/until and would answer with the latest lines
-      return Response.json({ error: "Browsing past logs needs agent 1.2 or newer. Open Add server and run its one command on your server: it installs the latest agent over the old one and keeps your history." }, { status: 404 });
+      return Response.json(
+        {
+          error:
+            "Browsing past logs needs agent 1.2 or newer. Open Add server and run its one command on your server: it installs the latest agent over the old one and keeps your history.",
+        },
+        { status: 404 },
+      );
     return Response.json(r, { headers: { "cache-control": "no-store" } });
   } catch (e) {
     const status = e instanceof NetdataError && e.status === 404 ? 404 : 502;
     return Response.json(
-      { error: status === 404 ? "Live logs need agent 1.2 or newer. Open Add server and run its one command on your server: it installs the latest agent over the old one and keeps your history." : (e as Error).message },
+      {
+        error:
+          status === 404
+            ? "Live logs need agent 1.2 or newer. Open Add server and run its one command on your server: it installs the latest agent over the old one and keeps your history."
+            : (e as Error).message,
+      },
       { status },
     );
   }
