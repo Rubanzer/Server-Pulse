@@ -6,3 +6,10 @@
 export function hardNavigate(path: string) {
   window.location.assign(path);
 }
+
+/** The session ended (401): log in again and come back to this exact page. */
+export function toLogin() {
+  hardNavigate(
+    `/login?next=${encodeURIComponent(location.pathname + location.search)}`,
+  );
+}

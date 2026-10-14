@@ -1,6 +1,14 @@
 // Metric catalogue + derivation from raw Netdata dimensions. Pure; shared by live, history, sync and demo.
 
-export const METRICS = ["cpu", "ram", "load", "io", "net", "disk", "temp"] as const;
+export const METRICS = [
+  "cpu",
+  "ram",
+  "load",
+  "io",
+  "net",
+  "disk",
+  "temp",
+] as const;
 export type Metric = (typeof METRICS)[number];
 export type Dims = Record<string, number>;
 
@@ -13,9 +21,13 @@ type Def = {
 };
 
 export const DEFS: Record<Metric, Def> = {
-  cpu: { label: "CPU", ids: ["system.cpu"], series: [{ key: "cpu", label: "CPU", unit: "%" }] },
+  cpu: {
+    label: "CPU",
+    ids: ["system.cpu"],
+    series: [{ key: "cpu", label: "CPU", unit: "%" }],
+  },
   ram: {
-    label: "RAM",
+    label: "Memory",
     ids: ["system.ram"],
     series: [
       { key: "pct", label: "Used", unit: "%" },
@@ -48,18 +60,23 @@ export const DEFS: Record<Metric, Def> = {
     ],
   },
   disk: {
-    label: "Disk /",
+    label: "Disk space",
     ids: ["disk_space./", "disk_space._"],
     series: [
       { key: "pct", label: "Used", unit: "%" },
       { key: "usedGiB", label: "Used", unit: "GiB" },
     ],
   },
-  temp: { label: "Temperature", ids: [], series: [{ key: "max", label: "Hottest", unit: "°C" }] },
+  temp: {
+    label: "Temperature",
+    ids: [],
+    series: [{ key: "max", label: "Hottest", unit: "°C" }],
+  },
 };
 
 /** Netdata temperature contexts differ between collector versions (sensors.temperature, sensors.chip_temperature, …). */
-export const isTempContext = (ctx: string | undefined) => !!ctx && /^sensors\..*temp/.test(ctx);
+export const isTempContext = (ctx: string | undefined) =>
+  !!ctx && /^sensors\..*temp/.test(ctx);
 
 export function isMetric(x: unknown): x is Metric {
   return typeof x === "string" && (METRICS as readonly string[]).includes(x);
@@ -83,18 +100,34 @@ export function derive(metric: Metric, d: Dims): Dims {
     case "ram": {
       const used = d.used ?? 0;
       const total = sum(d);
-      return { pct: total ? round((100 * used) / total) : 0, usedGiB: round(used / 1024) };
+      return {
+        pct: total ? round((100 * used) / total) : 0,
+        usedGiB: round(used / 1024),
+      };
     }
     case "load":
-      return { load1: d.load1 ?? 0, load5: d.load5 ?? 0, load15: d.load15 ?? 0 };
+      return {
+        load1: d.load1 ?? 0,
+        load5: d.load5 ?? 0,
+        load15: d.load15 ?? 0,
+      };
     case "io":
-      return { read: round(Math.abs(pick(d, "in", "reads") ?? 0)), write: round(Math.abs(pick(d, "out", "writes") ?? 0)) };
+      return {
+        read: round(Math.abs(pick(d, "in", "reads") ?? 0)),
+        write: round(Math.abs(pick(d, "out", "writes") ?? 0)),
+      };
     case "net":
-      return { in: round(Math.abs(d.received ?? 0)), out: round(Math.abs(d.sent ?? 0)) };
+      return {
+        in: round(Math.abs(d.received ?? 0)),
+        out: round(Math.abs(d.sent ?? 0)),
+      };
     case "disk": {
       const used = d.used ?? 0;
       const avail = d.avail ?? 0;
-      return { pct: used + avail ? round((100 * used) / (used + avail)) : 0, usedGiB: round(used) };
+      return {
+        pct: used + avail ? round((100 * used) / (used + avail)) : 0,
+        usedGiB: round(used),
+      };
     }
     case "temp": {
       const vals = Object.values(d);

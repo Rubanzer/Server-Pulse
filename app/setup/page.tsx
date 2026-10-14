@@ -1,7 +1,6 @@
-import { SetupGuide } from "@/components/setup-guide";
+import { redirect } from "next/navigation";
 
-export const metadata = { title: "Server setup", description: "Set up the Server Pulse server kit on Ubuntu, step by step." };
-
+// The old step-by-step server kit is retired: one install command on Add server does it all.
 export default function SetupPage() {
-  return <SetupGuide />;
+  redirect("/connect");
 }

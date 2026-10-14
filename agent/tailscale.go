@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os/exec"
 	"regexp"
 	"strconv"
@@ -71,7 +73,8 @@ func pickFunnelPort(serveJSON []byte, host string) (port int, reuse bool) {
 	return 0, false
 }
 
-var tsAdminLink = regexp.MustCompile(`https://login\.tailscale\.com/\S+`)
+// URL characters only: no control characters (terminal escape sequences) can ride along when it's printed
+var tsAdminLink = regexp.MustCompile(`https://login\.tailscale\.com/[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+`)
 
 // systemTailscale publishes the agent through an existing, logged-in Tailscale. It returns the public
 // address, or "" with a note to show (empty note: Tailscale isn't installed or logged in here).
@@ -92,9 +95,21 @@ func systemTailscale() (publicURL, note string, port int) {
 		return "", "Tailscale is installed, but Funnel ports 443, 8443 and 10000 are all used by your other services here", 0
 	}
 	if !reuse {
-		// --bg: tailscaled keeps it after the installer exits and across restarts; only this one port is touched
-		msg, err := exec.CommandContext(ctx, "tailscale", "funnel", "--bg", "--https="+strconv.Itoa(port), agentTarget).CombinedOutput()
-		if err != nil || ctx.Err() != nil {
+		step("Turning on Tailscale Funnel for the agent")
+		// --bg: tailscaled keeps it after the installer exits and across restarts; only this one port is touched.
+		// The first time, Tailscale waits until Funnel is allowed in the browser: show its link at once and
+		// give the owner time to click it, instead of a silent wait.
+		fctx, fcancel := context.WithTimeout(context.Background(), funnelWait)
+		defer fcancel()
+		w := &linkWatch{onLink: func(link string) {
+			fmt.Printf("\n  Tailscale needs Funnel allowed for this machine (once). Open this link and press Allow:\n\n      %s\n\n  Waiting for you (up to %d minutes). If the dashboard says the command expired, get a new one there.\n\n", link, int(funnelWait/time.Minute))
+		}}
+		cmd := exec.CommandContext(fctx, "tailscale", "funnel", "--bg", "--https="+strconv.Itoa(port), agentTarget)
+		cmd.Stdout, cmd.Stderr = w, w   // the same writer: exec then uses a single goroutine, no race
+		cmd.WaitDelay = 5 * time.Second // never hang past the timeout on a pipe something else kept open
+		err := cmd.Run()
+		msg := w.buf.Bytes()
+		if err != nil || fctx.Err() != nil {
 			// it may have opened the port before failing or timing out: close it, nothing records it
 			stopSystemFunnel(port)
 			if link := tsAdminLink.Find(msg); link != nil {
@@ -108,6 +123,33 @@ func systemTailscale() (publicURL, note string, port int) {
 		u += ":" + strconv.Itoa(port)
 	}
 	return u, "", port
+}
+
+// funnelWait: how long the installer waits for the owner to allow Funnel in the browser.
+// Shorter than the pairing code's 10 minutes, so the code still works when the owner allowed it in time.
+const funnelWait = 8 * time.Minute
+
+// linkWatch collects a command's output and reports the first complete Tailscale admin link it prints.
+type linkWatch struct {
+	buf    bytes.Buffer
+	shown  bool
+	onLink func(string)
+}
+
+func (w *linkWatch) Write(p []byte) (int, error) {
+	if w.buf.Len() < 64<<10 { // bounded: tailscale prints a few lines
+		w.buf.Write(p)
+	}
+	if !w.shown {
+		b := w.buf.Bytes()
+		if i := bytes.LastIndexByte(b, '\n'); i >= 0 { // complete lines only: never a half-printed link
+			if link := tsAdminLink.Find(b[:i]); link != nil {
+				w.shown = true
+				w.onLink(string(link))
+			}
+		}
+	}
+	return len(p), nil
 }
 
 // stopSystemFunnel undoes what systemTailscale set up (uninstall).
