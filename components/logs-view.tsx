@@ -2,30 +2,13 @@
 
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import {
-  memo,
-  useCallback,
-  useDeferredValue,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-} from "react";
+import { memo, useCallback, useDeferredValue, useEffect, useMemo, useRef, useState } from "react";
 import { RingBuffer } from "@/lib/algo";
-import { toLogin } from "@/lib/navigate";
 import { LOGS_IDLE_MS, readIdle } from "./stream-utils";
 import { fmtWindow, TimeRange } from "./time-range";
 
 /** hold: this line repeated 5× in a minute, copies are held back for `hold` s; held: copies held back before it */
-type Line = {
-  c: string;
-  t: number;
-  p: number;
-  u: string;
-  m: string;
-  hold?: number;
-  held?: number;
-};
+type Line = { c: string; t: number; p: number; u: string; m: string; hold?: number; held?: number };
 type Failure = {
   id: number;
   ts: number;
@@ -36,8 +19,7 @@ type Failure = {
   source: string;
   message: string;
 };
-type Conn =
-  "connecting" | "live" | "polling" | "paused" | "reconnecting" | "unsupported";
+type Conn = "connecting" | "live" | "polling" | "paused" | "reconnecting" | "unsupported";
 
 const MAX_LINES = 2000;
 const HIDDEN_KEY = "sp-logs-hidden";
@@ -64,32 +46,14 @@ const nowSec = () => Math.floor(Date.now() / 1000);
 const UNIT_RE = /^[A-Za-z0-9@:._-]{1,100}$/;
 const LEVELS = [
   { key: "all", label: "All", prio: 6 },
-  { key: "warn", label: "Warnings and errors", prio: 4 },
-  { key: "err", label: "Errors only", prio: 3 },
+  { key: "warn", label: "Warnings+", prio: 4 },
+  { key: "err", label: "Errors+", prio: 3 },
 ] as const;
-const PRIO_NAME = [
-  "EMERG",
-  "ALERT",
-  "CRIT",
-  "ERROR",
-  "WARN",
-  "NOTICE",
-  "INFO",
-  "DEBUG",
-];
+const PRIO_NAME = ["EMERG", "ALERT", "CRIT", "ERROR", "WARN", "NOTICE", "INFO", "DEBUG"];
 const prioClass = (p: number) =>
-  p <= 3
-    ? "bg-crit text-on-signal"
-    : p === 4
-      ? "bg-warn text-on-signal"
-      : p === 5
-        ? "bg-select text-ink"
-        : "bg-paper text-muted";
+  p <= 3 ? "bg-crit text-on-signal" : p === 4 ? "bg-warn text-on-signal" : p === 5 ? "bg-signal/20 text-ink" : "bg-paper text-muted";
 
-const SEV_STYLE: Record<
-  Failure["severity"],
-  { cls: string; icon: string; label: string }
-> = {
+const SEV_STYLE: Record<Failure["severity"], { cls: string; icon: string; label: string }> = {
   critical: { cls: "bg-crit text-on-signal", icon: "⛔", label: "Critical" },
   error: { cls: "border border-crit text-crit", icon: "✖", label: "Error" },
   warning: { cls: "border border-warn text-warn", icon: "⚠", label: "Warning" },
@@ -110,12 +74,9 @@ const KIND_LABEL: Record<string, string> = {
 
 export function LogsView() {
   const params = useSearchParams();
-  // null until the URL hash is read: a link to #failures must not mount Live logs (and open a stream) first
-  const [tab, setTab] = useState<"live" | "failures" | null>(null);
+  const [tab, setTab] = useState<"live" | "failures">("live");
   useEffect(() => {
-    queueMicrotask(() =>
-      setTab(location.hash === "#failures" ? "failures" : "live"),
-    );
+    if (location.hash === "#failures") queueMicrotask(() => setTab("failures"));
   }, []);
   // /logs?from=&to=&unit= (from History or a failure) opens that window instead of the live tail
   const [jump, setJump] = useState<Jump | null>(() => {
@@ -133,11 +94,7 @@ export function LogsView() {
   });
   const choose = (t: "live" | "failures") => {
     setTab(t);
-    history.replaceState(
-      null,
-      "",
-      `${location.pathname}${location.search}${t === "failures" ? "#failures" : ""}`,
-    );
+    history.replaceState(null, "", `${location.pathname}${location.search}${t === "failures" ? "#failures" : ""}`);
   };
   const showLogs = (j: Omit<Jump, "n">) => {
     setJump((p) => ({ ...j, n: (p?.n ?? 0) + 1 }));
@@ -154,16 +111,9 @@ export function LogsView() {
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight">Logs</h1>
-          <p className="text-sm text-muted">
-            Your server&apos;s system log, live, and every failure Server Pulse
-            has recorded.
-          </p>
+          <p className="text-sm text-muted">Your server&apos;s system log, live, and every failure Server Pulse has recorded.</p>
         </div>
-        <div
-          role="group"
-          aria-label="View"
-          className="flex rounded-lg border border-line bg-surface p-0.5 text-sm"
-        >
+        <div role="tablist" aria-label="View" className="flex rounded-lg border border-line bg-surface p-0.5 text-sm">
           {(
             [
               ["live", "Live logs"],
@@ -172,7 +122,8 @@ export function LogsView() {
           ).map(([k, l]) => (
             <button
               key={k}
-              aria-pressed={tab === k}
+              role="tab"
+              aria-selected={tab === k}
               onClick={() => choose(k)}
               className={`rounded-md px-3 py-1.5 ${tab === k ? "bg-signal text-on-signal" : "text-muted hover:text-ink"}`}
             >
@@ -181,24 +132,14 @@ export function LogsView() {
           ))}
         </div>
       </header>
-      {tab === null ? null : tab === "live" ? (
-        <LiveLogs key={jump?.n ?? 0} start={jump} />
-      ) : (
-        <Failures jump={jump} onShowLogs={showLogs} />
-      )}
+      {tab === "live" ? <LiveLogs key={jump?.n ?? 0} start={jump} /> : <Failures jump={jump} onShowLogs={showLogs} />}
     </div>
   );
 }
 
 // ---------- live logs ----------
 
-function useLogStream(
-  prio: number,
-  unit: string,
-  paused: boolean,
-  enabled: boolean,
-  extra: string,
-) {
+function useLogStream(prio: number, unit: string, paused: boolean, enabled: boolean, extra: string) {
   const [lines, setLines] = useState<Line[]>([]);
   const [conn, setConn] = useState<Conn>("connecting");
   const [note, setNote] = useState<string | null>(null);
@@ -231,9 +172,6 @@ function useLogStream(
     let ctrl: AbortController | null = null;
     let pending: Line[] = [];
     let flushTimer: ReturnType<typeof setTimeout> | undefined;
-    // every (re)connect starts with the last 200 lines, and polling starts from the newest: drop lines already
-    // shown, by their journal cursor (bounded: rebuilt from what's on screen when it grows large)
-    let seen = new Set<string>();
     // new filter: start from an empty view (after this effect, so React batches it with the stream setup)
     queueMicrotask(() => {
       if (stopped) return;
@@ -243,16 +181,6 @@ function useLogStream(
 
     // batch DOM updates: many lines can arrive at once
     const add = (l: Line) => {
-      if (l.c) {
-        if (seen.has(l.c)) return;
-        if (seen.size >= 4 * MAX_LINES)
-          seen = new Set(
-            [...ring.current.toArray(), ...hold.current, ...pending].map(
-              (x) => x.c,
-            ),
-          );
-        seen.add(l.c);
-      }
       pending.push(l);
       if (!flushTimer)
         flushTimer = setTimeout(() => {
@@ -261,8 +189,7 @@ function useLogStream(
           pending = [];
           if (pausedRef.current) {
             hold.current.push(...batch);
-            if (hold.current.length > MAX_LINES)
-              hold.current = hold.current.slice(-MAX_LINES);
+            if (hold.current.length > MAX_LINES) hold.current = hold.current.slice(-MAX_LINES);
             setHeld(hold.current.length);
             return;
           }
@@ -274,13 +201,9 @@ function useLogStream(
     for (const [k, v] of new URLSearchParams(extra)) qs.set(k, v);
     if (unit) qs.set("unit", unit);
 
-    let pollMs = 3000;
     async function stream(): Promise<"ended" | "fallback"> {
-      const tk = await fetch("/api/logs/token", { cache: "no-store" }).then(
-        (r) => r.json(),
-      );
+      const tk = await fetch("/api/logs/token", { cache: "no-store" }).then((r) => r.json());
       if (stopped) return "ended";
-      pollMs = tk.tunnel === "ngrok" ? 10_000 : 3000; // ngrok's free plan counts every request
       if (tk.demo || !tk.url) return "fallback";
       ctrl = new AbortController();
       const res = await fetch(`${tk.url}?${qs}`, {
@@ -297,9 +220,7 @@ function useLogStream(
       const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
       let buf = "";
       for (;;) {
-        const { value, done } = await readIdle(reader, LOGS_IDLE_MS, () =>
-          ctrl?.abort(),
-        );
+        const { value, done } = await readIdle(reader, LOGS_IDLE_MS, () => ctrl?.abort());
         if (done) return "ended";
         buf += value;
         let nl;
@@ -322,11 +243,7 @@ function useLogStream(
         cache: "no-store",
         signal: ctrl.signal,
       });
-      if (res.status === 401) {
-        toLogin();
-        return null;
-      }
-      const body = await res.json().catch(() => ({}));
+      const body = await res.json();
       if (res.status === 404) {
         setConn("unsupported");
         setNote(body.error);
@@ -344,18 +261,12 @@ function useLogStream(
       let fails = 0;
       let cursor = "";
       let backoff = 1000;
-      let fellBackAt = 0;
       while (!stopped) {
         try {
-          // a stream that failed may work again later (tunnel back, browser warning gone): retry every 5 min
-          if (!useStream && fellBackAt && Date.now() - fellBackAt > 5 * 60_000)
-            useStream = true;
           if (useStream) {
             const r = await stream();
-            if (r === "fallback") {
-              useStream = false;
-              fellBackAt = Date.now();
-            } else await new Promise((res) => setTimeout(res, 1000)); // reconnect, never in a tight loop
+            if (r === "fallback") useStream = false;
+            else await new Promise((res) => setTimeout(res, 1000)); // reconnect, never in a tight loop
             fails = 0;
             backoff = 1000;
             continue;
@@ -364,22 +275,16 @@ function useLogStream(
           if (next === null) return;
           cursor = next;
           backoff = 1000;
-          await new Promise((r) => setTimeout(r, pollMs));
-          // background tab: no requests until it's visible again
-          while (document.hidden && !stopped)
-            await new Promise((r) => setTimeout(r, 1000));
+          await new Promise((r) => setTimeout(r, 3000));
         } catch (e) {
           if (stopped || (e as Error).name === "AbortError") continue;
           if (useStream && ++fails >= 2) {
             useStream = false;
-            fellBackAt = Date.now();
             continue;
           }
           setConn("reconnecting");
           setNote((e as Error).message);
-          await new Promise((r) =>
-            setTimeout(r, backoff + Math.random() * 500),
-          );
+          await new Promise((r) => setTimeout(r, backoff + Math.random() * 500));
           backoff = Math.min(backoff * 2, 30_000);
         }
       }
@@ -397,13 +302,7 @@ function useLogStream(
 type RangeState = "loading" | "more" | "done" | "error" | "unsupported";
 
 /** A past window of the log, oldest first, 500 lines a page. */
-function useLogRange(
-  prio: number,
-  unit: string,
-  from: number,
-  to: number,
-  extra: string,
-) {
+function useLogRange(prio: number, unit: string, from: number, to: number, extra: string) {
   const [lines, setLines] = useState<Line[]>([]);
   const [state, setState] = useState<RangeState>("loading");
   const [note, setNote] = useState<string | null>(null);
@@ -429,8 +328,7 @@ function useLogRange(
           cache: "no-store",
           signal: ctrl.signal,
         });
-        if (res.status === 401) return toLogin();
-        const body = await res.json().catch(() => ({}));
+        const body = await res.json();
         if (!res.ok) {
           setState(res.status === 404 ? "unsupported" : "error");
           setNote(body.error ?? `HTTP ${res.status}`);
@@ -438,12 +336,8 @@ function useLogRange(
         }
         cursor.current = body.cursor ?? cursor.current;
         setLines((prev) => {
-          const next = reset
-            ? (body.entries as Line[])
-            : [...prev, ...(body.entries as Line[])];
-          return next.length > MAX_RANGE_LINES
-            ? next.slice(0, MAX_RANGE_LINES)
-            : next;
+          const next = reset ? (body.entries as Line[]) : [...prev, ...(body.entries as Line[])];
+          return next.length > MAX_RANGE_LINES ? next.slice(0, MAX_RANGE_LINES) : next;
         });
         setNote(body.error ?? null);
         setState(body.more ? "more" : "done");
@@ -475,11 +369,7 @@ function LiveLogs({ start }: { start: Jump | null }) {
   const [unit, setUnit] = useState(start?.unit ?? "");
   const [q, setQ] = useState("");
   const [paused, setPaused] = useState(false);
-  const [win, setWin] = useState<Win>(() =>
-    start
-      ? { preset: null, from: start.from, to: start.to || nowSec() }
-      : { preset: "live", from: 0, to: 0 },
-  );
+  const [win, setWin] = useState<Win>(() => (start ? { preset: null, from: start.from, to: start.to || nowSec() } : { preset: "live", from: 0, to: 0 }));
   const live = win.preset === "live";
   const prio = LEVELS.find((l) => l.key === level)!.prio;
   // services hidden from the log and the repeat hold: remembered on this device. Read after mount, so
@@ -491,14 +381,7 @@ function LiveLogs({ start }: { start: Jump | null }) {
     queueMicrotask(() => {
       try {
         const v = JSON.parse(localStorage.getItem(HIDDEN_KEY) ?? "[]");
-        if (Array.isArray(v))
-          setHidden(
-            v
-              .filter(
-                (x): x is string => typeof x === "string" && UNIT_RE.test(x),
-              )
-              .slice(0, 20),
-          );
+        if (Array.isArray(v)) setHidden(v.filter((x): x is string => typeof x === "string" && UNIT_RE.test(x)).slice(0, 20));
         setQuiet(localStorage.getItem(QUIET_KEY) !== "0");
       } catch {}
       loaded.current = true;
@@ -511,19 +394,8 @@ function LiveLogs({ start }: { start: Jump | null }) {
       localStorage.setItem(QUIET_KEY, quiet ? "1" : "0");
     } catch {}
   }, [hidden, quiet]);
-  const hideUnit = useCallback(
-    (u: string) =>
-      setHidden((h) => (h.includes(u) || h.length >= 20 ? h : [...h, u])),
-    [],
-  );
-  const extra = useMemo(
-    () =>
-      new URLSearchParams({
-        ...(hidden.length ? { exclude: hidden.join(",") } : {}),
-        ...(quiet ? { quiet: "1" } : {}),
-      }).toString(),
-    [hidden, quiet],
-  );
+  const hideUnit = useCallback((u: string) => setHidden((h) => (h.includes(u) || h.length >= 20 ? h : [...h, u])), []);
+  const extra = useMemo(() => new URLSearchParams({ ...(hidden.length ? { exclude: hidden.join(",") } : {}), ...(quiet ? { quiet: "1" } : {}) }).toString(), [hidden, quiet]);
   const stream = useLogStream(prio, unit, paused, live, extra);
   const range = useLogRange(prio, unit, live ? 0 : win.from, win.to, extra);
   const { held, clear } = stream;
@@ -533,29 +405,16 @@ function LiveLogs({ start }: { start: Jump | null }) {
 
   // apply the service filter after typing stops (it restarts the stream)
   useEffect(() => {
-    const t = setTimeout(
-      () => setUnit(UNIT_RE.test(unitInput.trim()) ? unitInput.trim() : ""),
-      500,
-    );
+    const t = setTimeout(() => setUnit(UNIT_RE.test(unitInput.trim()) ? unitInput.trim() : ""), 500);
     return () => clearTimeout(t);
   }, [unitInput]);
 
-  const units = useMemo(
-    () =>
-      [...new Set(lines.map((l) => l.u).filter(Boolean))].sort().slice(0, 50),
-    [lines],
-  );
+  const units = useMemo(() => [...new Set(lines.map((l) => l.u).filter(Boolean))].sort().slice(0, 50), [lines]);
   // typing stays responsive: the filter over up to 20,000 lines runs on the deferred value, after the keystroke paints
   const needle = useDeferredValue(q).trim().toLowerCase();
   const shown = useMemo(() => {
     const hide = new Set(hidden); // agents before 1.3.2 don't apply "exclude": hide those lines here too
-    return lines.filter(
-      (l) =>
-        !hide.has(l.u) &&
-        (!needle ||
-          l.m.toLowerCase().includes(needle) ||
-          l.u.toLowerCase().includes(needle)),
-    );
+    return lines.filter((l) => !hide.has(l.u) && (!needle || l.m.toLowerCase().includes(needle) || l.u.toLowerCase().includes(needle)));
   }, [lines, needle, hidden]);
 
   // stick to the bottom unless the reader scrolled up
@@ -595,11 +454,7 @@ function LiveLogs({ start }: { start: Jump | null }) {
         onPreset={(k) => {
           const p = LOG_PRESETS.find((x) => x.key === k)!;
           const now = nowSec();
-          setWin(
-            p.sec
-              ? { preset: k, from: now - p.sec, to: now }
-              : { preset: "live", from: 0, to: 0 },
-          );
+          setWin(p.sec ? { preset: k, from: now - p.sec, to: now } : { preset: "live", from: 0, to: 0 });
           setAtBottom(true);
           setUnseen(0);
         }}
@@ -607,11 +462,7 @@ function LiveLogs({ start }: { start: Jump | null }) {
       />
       <div className="rounded-xl border border-line bg-surface">
         <div className="flex flex-wrap items-center gap-2 border-b border-line p-3">
-          <div
-            role="group"
-            aria-label="Level"
-            className="flex rounded-lg border border-line p-0.5 text-xs"
-          >
+          <div role="group" aria-label="Level" className="flex rounded-lg border border-line p-0.5 text-xs">
             {LEVELS.map((l) => (
               <button
                 key={l.key}
@@ -629,7 +480,7 @@ function LiveLogs({ start }: { start: Jump | null }) {
             list="log-units"
             placeholder="Service (e.g. nginx.service)"
             aria-label="Filter by service"
-            className="min-w-0 flex-1 basis-40 rounded-lg border border-field bg-paper px-2.5 py-1 text-sm sm:w-52 sm:flex-none"
+            className="min-w-0 flex-1 basis-40 rounded-lg border border-line bg-paper px-2.5 py-1 text-sm sm:w-52 sm:flex-none"
           />
           <datalist id="log-units">
             {units.map((u) => (
@@ -642,33 +493,19 @@ function LiveLogs({ start }: { start: Jump | null }) {
             onChange={(e) => setQ(e.target.value)}
             placeholder="Search"
             aria-label="Search log lines"
-            className="min-w-0 flex-1 basis-32 rounded-lg border border-field bg-paper px-2.5 py-1 text-sm sm:w-40 sm:flex-none"
+            className="min-w-0 flex-1 basis-32 rounded-lg border border-line bg-paper px-2.5 py-1 text-sm sm:w-40 sm:flex-none"
           />
-          <label
-            className="flex items-center gap-1.5 text-xs text-muted"
-            title="A line that repeats 5 times in a minute is held back for 10 minutes"
-          >
-            <input
-              type="checkbox"
-              checked={quiet}
-              onChange={(e) => setQuiet(e.target.checked)}
-              className="accent-[var(--color-signal)]"
-            />
-            Hold repeated lines
+          <label className="flex items-center gap-1.5 text-xs text-muted" title="A line that repeats 5 times in a minute is held back for 10 minutes">
+            <input type="checkbox" checked={quiet} onChange={(e) => setQuiet(e.target.checked)} className="accent-[var(--color-signal)]" />
+            Hold repeats
           </label>
           {live ? (
             <div className="ml-auto flex flex-wrap items-center gap-2">
               <ConnBadge conn={conn} paused={paused} />
-              <button
-                onClick={() => setPaused((p) => !p)}
-                className="rounded-lg border border-line px-3 py-1 text-sm hover:border-signal"
-              >
+              <button onClick={() => setPaused((p) => !p)} className="rounded-lg border border-line px-3 py-1 text-sm hover:border-signal">
                 {paused ? `Resume${held ? ` (${held})` : ""}` : "Pause"}
               </button>
-              <button
-                onClick={clear}
-                className="rounded-lg border border-line px-3 py-1 text-sm hover:border-signal"
-              >
+              <button onClick={clear} className="rounded-lg border border-line px-3 py-1 text-sm hover:border-signal">
                 Clear
               </button>
             </div>
@@ -680,37 +517,29 @@ function LiveLogs({ start }: { start: Jump | null }) {
             </span>
           )}
         </div>
-        {/* always shown, so hiding a noisy service can be discovered without a hover tooltip */}
-        <div className="flex flex-wrap items-center gap-1.5 border-b border-line px-3 py-2 text-xs">
-          <span className="text-muted">Hidden services:</span>
-          {hidden.length === 0 && (
-            <span className="text-muted">
-              none. Tap a service name in the log to hide it.
-            </span>
-          )}
-          {hidden.map((u) => (
-            <button
-              key={u}
-              onClick={() => setHidden((h) => h.filter((x) => x !== u))}
-              className="inline-flex max-w-full items-center gap-1 rounded-full border border-line px-2 py-0.5 hover:border-signal"
-              title={`Show ${u} again`}
-            >
-              <span className="truncate font-mono">{u}</span>
-              <span aria-hidden>×</span>
-              <span className="sr-only">show again</span>
-            </button>
-          ))}
-        </div>
-        {note && (
-          <p className="border-b border-line bg-paper px-3 py-2 text-sm text-warn">
-            {note}
-          </p>
+        {hidden.length > 0 && (
+          <div className="flex flex-wrap items-center gap-1.5 border-b border-line px-3 py-2 text-xs">
+            <span className="text-muted">Hidden:</span>
+            {hidden.map((u) => (
+              <button
+                key={u}
+                onClick={() => setHidden((h) => h.filter((x) => x !== u))}
+                className="inline-flex max-w-full items-center gap-1 rounded-full border border-line px-2 py-0.5 hover:border-signal"
+                title={`Show ${u} again`}
+              >
+                <span className="truncate font-mono">{u}</span>
+                <span aria-hidden>×</span>
+                <span className="sr-only">show again</span>
+              </button>
+            ))}
+          </div>
         )}
+        {note && <p className="border-b border-line bg-paper px-3 py-2 text-sm text-warn">{note}</p>}
         <div className="relative">
           <div
             ref={box}
             onScroll={onScroll}
-            className="h-[max(20rem,calc(100dvh-17rem))] overflow-y-auto font-mono text-[0.78125rem] leading-relaxed"
+            className="h-[65vh] overflow-y-auto font-mono text-[12.5px] leading-relaxed"
             role="log"
             aria-live="off"
             aria-label="Server log"
@@ -734,18 +563,13 @@ function LiveLogs({ start }: { start: Jump | null }) {
             ) : (
               shown.map((l) => <LogRow key={l.c} l={l} onHide={hideUnit} />)
             )}
-            {!live &&
-              range.state === "more" &&
-              lines.length < MAX_RANGE_LINES && (
-                <div className="border-t border-line p-3 text-center font-sans">
-                  <button
-                    onClick={range.loadMore}
-                    className="rounded-lg border border-line px-4 py-1.5 text-sm hover:border-signal"
-                  >
-                    Load the next 500 lines
-                  </button>
-                </div>
-              )}
+            {!live && range.state === "more" && lines.length < MAX_RANGE_LINES && (
+              <div className="border-t border-line p-3 text-center font-sans">
+                <button onClick={range.loadMore} className="rounded-lg border border-line px-4 py-1.5 text-sm hover:border-signal">
+                  Load the next 500 lines
+                </button>
+              </div>
+            )}
           </div>
           {!atBottom && unseen > 0 && (
             <button
@@ -760,8 +584,7 @@ function LiveLogs({ start }: { start: Jump | null }) {
           {live
             ? `Showing the last ${MAX_LINES.toLocaleString()} lines.`
             : `${fmtWindow(win.from, win.to)}, oldest first${lines.length >= MAX_RANGE_LINES ? `. Stopped at ${MAX_RANGE_LINES.toLocaleString()} lines: pick a shorter window or a stricter level to see the rest` : ""}.`}{" "}
-          Passwords, tokens and keys are removed on the server before lines are
-          sent.
+          Passwords, tokens and keys are removed on the server before lines are sent.
         </p>
       </div>
     </section>
@@ -769,75 +592,40 @@ function LiveLogs({ start }: { start: Jump | null }) {
 }
 
 // formatters built once: toLocaleTimeString(…, options) builds a new one per call, per row
-const TIME_FMT = new Intl.DateTimeFormat([], {
-  hour: "2-digit",
-  minute: "2-digit",
-  second: "2-digit",
-});
+const TIME_FMT = new Intl.DateTimeFormat([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
 const DAY_FMT = new Intl.DateTimeFormat([], { day: "numeric", month: "short" });
-const FULL_FMT = new Intl.DateTimeFormat([], {
-  dateStyle: "medium",
-  timeStyle: "medium",
-});
+const FULL_FMT = new Intl.DateTimeFormat([], { dateStyle: "medium", timeStyle: "medium" });
 let todayCache = { at: 0, start: 0 };
 /** Midnight today, recomputed at most once a minute. */
 const todayStart = () => {
   const now = Date.now();
-  if (now - todayCache.at > 60_000)
-    todayCache = { at: now, start: new Date(now).setHours(0, 0, 0, 0) };
+  if (now - todayCache.at > 60_000) todayCache = { at: now, start: new Date(now).setHours(0, 0, 0, 0) };
   return todayCache.start;
 };
 
 const unitLabel = (u: string) => u.replace(/\.service$/, "");
 
-const LogRow = memo(function LogRow({
-  l,
-  onHide,
-}: {
-  l: Line;
-  onHide: (u: string) => void;
-}) {
+const LogRow = memo(function LogRow({ l, onHide }: { l: Line; onHide: (u: string) => void }) {
   const d = new Date(l.t);
   const unit = l.u ? (
-    <button
-      onClick={() => onHide(l.u)}
-      aria-label={`Hide ${unitLabel(l.u)}`}
-      className="truncate text-left text-signal hover:line-through"
-      title={`${l.u}: click to hide this service`}
-    >
+    <button onClick={() => onHide(l.u)} className="truncate text-left text-signal hover:line-through" title={`${l.u}: click to hide this service`}>
       {unitLabel(l.u)}
     </button>
   ) : null;
   return (
-    <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 border-b border-line px-3 py-0.5 [content-visibility:auto] [contain-intrinsic-size:auto_22px] hover:bg-paper sm:grid-cols-[auto_3.5rem_11rem_minmax(0,1fr)]">
-      <time
-        className="whitespace-nowrap text-muted tabular-nums"
-        dateTime={d.toISOString()}
-        title={FULL_FMT.format(d)}
-      >
+    <div className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-2 border-b border-line/50 px-3 py-0.5 [content-visibility:auto] [contain-intrinsic-size:auto_22px] hover:bg-paper sm:grid-cols-[auto_auto_11rem_minmax(0,1fr)]">
+      <time className="whitespace-nowrap text-muted tabular-nums" dateTime={d.toISOString()} title={FULL_FMT.format(d)}>
         {l.t >= todayStart() ? "" : `${DAY_FMT.format(d)} `}
         {TIME_FMT.format(d)}
       </time>
-      {/* fixed-width badge column: ERROR and INFO rows keep the service and message columns aligned */}
-      <span
-        className={`self-start justify-self-start rounded px-1 text-center text-[0.625rem] font-semibold leading-5 sm:w-full ${prioClass(l.p)}`}
-      >
-        {PRIO_NAME[l.p] ?? l.p}
-      </span>
-      <span className="hidden min-w-0 items-start sm:flex">{unit}</span>
+      <span className={`self-start justify-self-start rounded px-1 text-[0.625rem] font-semibold leading-5 ${prioClass(l.p)}`}>{PRIO_NAME[l.p] ?? l.p}</span>
+      <span className="hidden min-w-0 sm:flex">{unit}</span>
       <span className="col-span-2 whitespace-pre-wrap break-words sm:col-span-1">
         <span className="mr-1 inline-flex max-w-full sm:hidden">{unit}</span>
-        {l.m.trimStart()}
-        {l.held ? (
-          <span className="ml-2 rounded bg-paper px-1 font-sans text-[0.6875rem] text-muted">
-            +{l.held.toLocaleString()} repeats held back
-          </span>
-        ) : null}
+        {l.m}
+        {l.held ? <span className="ml-2 rounded bg-paper px-1 font-sans text-[11px] text-muted">+{l.held.toLocaleString()} repeats held back</span> : null}
         {l.hold ? (
-          <span className="ml-2 rounded bg-paper px-1 font-sans text-[0.6875rem] text-warn">
-            repeating 5× a minute: holding copies for {Math.round(l.hold / 60)}{" "}
-            min
-          </span>
+          <span className="ml-2 rounded bg-paper px-1 font-sans text-[11px] text-warn">repeating 5× a minute: holding copies for {Math.round(l.hold / 60)} min</span>
         ) : null}
       </span>
     </div>
@@ -857,10 +645,7 @@ function ConnBadge({ conn, paused }: { conn: Conn; paused: boolean }) {
             ? ["Agent update needed", "text-warn"]
             : ["Connecting…", "text-muted"];
   return (
-    <span
-      className={`flex items-center gap-1.5 text-xs font-medium ${cls}`}
-      role="status"
-    >
+    <span className={`flex items-center gap-1.5 text-xs font-medium ${cls}`} role="status">
       <span className="size-2 rounded-full bg-current" />
       {label}
     </span>
@@ -872,7 +657,7 @@ function ConnBadge({ conn, paused }: { conn: Conn; paused: boolean }) {
 const SEV_FILTERS = [
   { key: "", label: "All" },
   { key: "critical", label: "Critical" },
-  { key: "critical,error", label: "Errors and critical" },
+  { key: "critical,error", label: "Errors+" },
   { key: "warning", label: "Warnings" },
 ] as const;
 
@@ -890,19 +675,9 @@ function dayLabel(ts: number) {
   });
 }
 
-function Failures({
-  jump,
-  onShowLogs,
-}: {
-  jump: Jump | null;
-  onShowLogs: (j: Omit<Jump, "n">) => void;
-}) {
+function Failures({ jump, onShowLogs }: { jump: Jump | null; onShowLogs: (j: Omit<Jump, "n">) => void }) {
   const [filter, setFilter] = useState<string>("");
-  const [win, setWin] = useState<Win>(() =>
-    jump
-      ? { preset: null, from: jump.from, to: jump.to || nowSec() }
-      : { preset: "all", from: 0, to: 0 },
-  );
+  const [win, setWin] = useState<Win>(() => (jump ? { preset: null, from: jump.from, to: jump.to || nowSec() } : { preset: "all", from: 0, to: 0 }));
   const [events, setEvents] = useState<Failure[] | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [stored, setStored] = useState(true);
@@ -911,15 +686,7 @@ function Failures({
   const [summary, setSummary] = useState<Record<string, number>>({});
 
   const loadCtrl = useRef<AbortController | null>(null);
-  const pageCtrl = useRef<AbortController | null>(null);
-  const paged = useRef(false); // "Load older" was used: the 60-s refresh would collapse the list back to 50
-  useEffect(
-    () => () => {
-      loadCtrl.current?.abort();
-      pageCtrl.current?.abort();
-    },
-    [],
-  );
+  useEffect(() => () => loadCtrl.current?.abort(), []);
   const load = useCallback(
     async (before?: number) => {
       const p = new URLSearchParams({ limit: "50" });
@@ -927,29 +694,14 @@ function Failures({
       if (before) p.set("before", String(before));
       if (win.from) p.set("since", String(win.from));
       if (win.to) p.set("until", String(win.to));
-      // an older filter's answer must not overwrite this one; paging has its own controller, so a
-      // refresh never cancels a "Load older" click
-      const ref = before ? pageCtrl : loadCtrl;
-      ref.current?.abort();
+      loadCtrl.current?.abort(); // an older filter's answer must not overwrite this one
       const ctrl = new AbortController();
-      ref.current = ctrl;
-      const r = await fetch(`/api/events?${p}`, {
-        cache: "no-store",
-        signal: ctrl.signal,
-      })
-        .then((x) => {
-          if (x.status === 401) toLogin();
-          return x.json().catch(() => null);
-        })
+      loadCtrl.current = ctrl;
+      const r = await fetch(`/api/events?${p}`, { cache: "no-store", signal: ctrl.signal })
+        .then((x) => x.json())
         .catch(() => null);
       if (ctrl.signal.aborted) return;
-      if (!r?.events) {
-        setEvents((prev) => prev ?? []); // no endless skeleton: the note says what went wrong
-        return setNote(
-          r?.error ?? "Couldn't load failures. Check your connection.",
-        );
-      }
-      if (before) paged.current = true;
+      if (!r?.events) return setNote(r?.error ?? "Couldn't load failures. Check your connection.");
       setNote(r.note ?? null);
       setStored(r.stored !== false);
       setMore(r.events.length === 50);
@@ -960,21 +712,12 @@ function Failures({
   );
 
   useEffect(() => {
-    paged.current = false;
     queueMicrotask(() => void load()); // load sets state only after its fetch resolves
-    const id = setInterval(
-      () => !document.hidden && !paged.current && void load(),
-      60_000,
-    );
+    const id = setInterval(() => !document.hidden && void load(), 60_000);
     return () => clearInterval(id);
   }, [load]);
 
-  const winLabel = win.preset
-    ? FAIL_PRESETS.find((p) => p.key === win.preset)!.label.replace(
-        "All (180 days)",
-        "180 days",
-      )
-    : fmtWindow(win.from, win.to);
+  const winLabel = win.preset ? FAIL_PRESETS.find((p) => p.key === win.preset)!.label.replace("All (180 days)", "180 days") : fmtWindow(win.from, win.to);
 
   const groups = useMemo(() => {
     const out: { day: string; items: Failure[] }[] = [];
@@ -997,16 +740,10 @@ function Failures({
           const p = FAIL_PRESETS.find((x) => x.key === k)!;
           const now = nowSec();
           setEvents(null);
-          setSummary({});
-          setWin(
-            p.sec
-              ? { preset: k, from: now - p.sec, to: 0 }
-              : { preset: "all", from: 0, to: 0 },
-          );
+          setWin(p.sec ? { preset: k, from: now - p.sec, to: 0 } : { preset: "all", from: 0, to: 0 });
         }}
         onRange={(from, to) => {
           setEvents(null);
-          setSummary({});
           setWin({ preset: null, from, to });
         }}
       />
@@ -1026,11 +763,7 @@ function Failures({
       </div>
       <div className="rounded-xl border border-line bg-surface">
         <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line p-3">
-          <div
-            role="group"
-            aria-label="Severity"
-            className="flex rounded-lg border border-line p-0.5 text-xs"
-          >
+          <div role="group" aria-label="Severity" className="flex rounded-lg border border-line p-0.5 text-xs">
             {SEV_FILTERS.map((f) => (
               <button
                 key={f.key}
@@ -1046,53 +779,27 @@ function Failures({
               </button>
             ))}
           </div>
-          <p className="text-xs text-muted">
-            {stored
-              ? "Saved for 180 days"
-              : "No database: showing the agent's last 2,000 failures"}
-          </p>
+          <p className="text-xs text-muted">{stored ? "Saved for 180 days" : "No database: showing the agent's last 2,000 failures"}</p>
         </div>
-        {note && (
-          <p
-            role="status"
-            className="flex flex-wrap items-center justify-between gap-2 border-b border-line bg-paper px-3 py-2 text-sm text-warn"
-          >
-            {note}
-            {events?.length === 0 && (
-              <button
-                onClick={() => void load()}
-                className="rounded-md border border-line px-2.5 py-0.5 text-ink hover:border-signal"
-              >
-                Try again
-              </button>
-            )}
-          </p>
-        )}
+        {note && <p className="border-b border-line bg-paper px-3 py-2 text-sm text-warn">{note}</p>}
         {!events ? (
           <div className="m-3 h-40 animate-pulse rounded-lg bg-paper" />
         ) : events.length === 0 ? (
           <div className="p-8 text-center">
             <p className="font-medium">
               No failures recorded{filter ? " for this filter" : ""}
-              {win.preset === "all"
-                ? ""
-                : ` in ${win.preset ? `the last ${winLabel}` : winLabel}`}
-              .
+              {win.preset === "all" ? "" : ` in ${win.preset ? `the last ${winLabel}` : winLabel}`}.
             </p>
             <p className="mx-auto mt-1 max-w-[52ch] text-sm text-muted">
-              Server Pulse watches your server&apos;s logs and vitals around the
-              clock. Crashes, failed services, out-of-memory kills, disk errors
-              and long CPU, memory, disk or temperature spikes will show up
-              here.
+              Server Pulse watches your server&apos;s logs and vitals around the clock. Crashes, failed services, out-of-memory kills, disk errors and long CPU,
+              memory, disk or temperature spikes will show up here.
             </p>
           </div>
         ) : (
           <ol>
             {groups.map((g) => (
               <li key={g.day}>
-                <h2 className="border-b border-line bg-paper px-3 py-1.5 text-xs font-semibold text-muted">
-                  {g.day}
-                </h2>
+                <h3 className="border-b border-line bg-paper px-3 py-1.5 text-xs font-semibold text-muted">{g.day}</h3>
                 <ol>
                   {g.items.map((e) => (
                     <FailureRow key={e.id} e={e} onShowLogs={onShowLogs} />
@@ -1122,13 +829,7 @@ function Failures({
   );
 }
 
-const FailureRow = memo(function FailureRow({
-  e,
-  onShowLogs,
-}: {
-  e: Failure;
-  onShowLogs: (j: Omit<Jump, "n">) => void;
-}) {
+const FailureRow = memo(function FailureRow({ e, onShowLogs }: { e: Failure; onShowLogs: (j: Omit<Jump, "n">) => void }) {
   const [open, setOpen] = useState(false);
   const s = SEV_STYLE[e.severity] ?? SEV_STYLE.error;
   const t = new Date(e.ts * 1000);
@@ -1139,50 +840,33 @@ const FailureRow = memo(function FailureRow({
         aria-expanded={open}
         className="grid w-full grid-cols-[auto_minmax(0,1fr)] gap-3 px-3 py-2.5 text-left hover:bg-paper"
       >
-        <span
-          className={`mt-0.5 inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-xs font-semibold ${s.cls}`}
-        >
+        <span className={`mt-0.5 inline-flex h-6 items-center gap-1 rounded-md px-1.5 text-xs font-semibold ${s.cls}`}>
           <span aria-hidden>{s.icon}</span>
           {s.label}
         </span>
         <span className="min-w-0">
           <span className="flex flex-wrap items-baseline gap-x-2 text-sm">
             <span className="font-medium">{KIND_LABEL[e.kind] ?? e.kind}</span>
-            {e.source &&
-              e.source !== "dashboard" &&
-              e.source !== "server-pulse" && (
-                <span className="truncate font-mono text-xs text-signal">
-                  {e.source}
-                </span>
-              )}
-            <span className="text-xs text-muted tabular-nums">
-              {t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-            </span>
+            {e.source && e.source !== "dashboard" && e.source !== "server-pulse" && <span className="truncate font-mono text-xs text-signal">{e.source}</span>}
+            <span className="text-xs text-muted tabular-nums">{t.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}</span>
             {e.count > 1 && (
-              <span
-                className="rounded bg-paper px-1.5 text-xs text-muted"
-                title={`Last at ${new Date(e.last * 1000).toLocaleString()}`}
-              >
+              <span className="rounded bg-paper px-1.5 text-xs text-muted" title={`Last at ${new Date(e.last * 1000).toLocaleString()}`}>
                 ×{e.count}
               </span>
             )}
           </span>
           {/* one failure can carry several lines (the program's errors, then systemd's verdict): headline first */}
-          <span
-            className={`mt-0.5 block font-mono text-xs text-ink ${open ? "whitespace-pre-wrap break-words" : "truncate"}`}
-          >
+          <span className={`mt-0.5 block font-mono text-xs text-ink/80 ${open ? "whitespace-pre-wrap break-words" : "truncate"}`}>
             {open ? e.message : e.message.split("\n")[0]}
           </span>
           {!open && e.message.includes("\n") && (
             <span className="mt-0.5 block text-xs text-muted">
-              +{e.message.split("\n").length - 1} more line
-              {e.message.split("\n").length > 2 ? "s" : ""}
+              +{e.message.split("\n").length - 1} more line{e.message.split("\n").length > 2 ? "s" : ""}
             </span>
           )}
           {open && e.count > 1 && (
             <span className="mt-1 block text-xs text-muted">
-              Repeated {e.count} times, last at{" "}
-              {new Date(e.last * 1000).toLocaleString()}.
+              Repeated {e.count} times, last at {new Date(e.last * 1000).toLocaleString()}.
             </span>
           )}
         </span>
@@ -1217,10 +901,5 @@ const FailureRow = memo(function FailureRow({
 
 /** The journal filter for a failure's source; empty for things the dashboard or the sampler noticed. */
 function logUnit(source: string) {
-  return source &&
-    source !== "dashboard" &&
-    source !== "server-pulse" &&
-    UNIT_RE.test(source)
-    ? source
-    : "";
+  return source && source !== "dashboard" && source !== "server-pulse" && UNIT_RE.test(source) ? source : "";
 }

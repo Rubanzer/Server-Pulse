@@ -17,17 +17,11 @@ const TTL_MS = 10 * 60_000;
 const APPROVE_WITHIN_MS = 30 * 60_000;
 
 /** "abcd 2345" / "ABCD-2345" → "ABCD2345" */
-export const normalizeCode = (c: string) =>
-  c.toUpperCase().replace(/[^A-Z0-9]/g, "");
-const hash = (code: string) =>
-  createHash("sha256")
-    .update("server-pulse pairing:" + normalizeCode(code))
-    .digest("hex");
+export const normalizeCode = (c: string) => c.toUpperCase().replace(/[^A-Z0-9]/g, "");
+const hash = (code: string) => createHash("sha256").update("server-pulse pairing:" + normalizeCode(code)).digest("hex");
 
 /** 8 characters from a 31-letter alphabet (≈ 8.5 × 10¹¹ codes), valid 10 minutes, single use. */
-export async function createPairingCode(
-  serverId: string,
-): Promise<{ code: string; expiresAt: string }> {
+export async function createPairingCode(serverId: string): Promise<{ code: string; expiresAt: string }> {
   if (!db) throw new Error("No database connected");
   let raw = "";
   for (let i = 0; i < 8; i++) raw += ALPHABET[randomInt(ALPHABET.length)];
@@ -35,61 +29,32 @@ export async function createPairingCode(
   // housekeeping: codes for this server that can't be used or approved any more
   await db
     .delete(schema.pairings)
-    .where(
-      and(
-        eq(schema.pairings.serverId, serverId),
-        lt(schema.pairings.expiresAt, new Date(Date.now() - APPROVE_WITHIN_MS)),
-      ),
-    );
-  await db
-    .insert(schema.pairings)
-    .values({ codeHash: hash(raw), serverId, expiresAt });
-  return {
-    code: `${raw.slice(0, 4)}-${raw.slice(4)}`,
-    expiresAt: expiresAt.toISOString(),
-  };
+    .where(and(eq(schema.pairings.serverId, serverId), lt(schema.pairings.expiresAt, new Date(Date.now() - APPROVE_WITHIN_MS))));
+  await db.insert(schema.pairings).values({ codeHash: hash(raw), serverId, expiresAt });
+  return { code: `${raw.slice(0, 4)}-${raw.slice(4)}`, expiresAt: expiresAt.toISOString() };
 }
 
 export type PairStatus = {
-  status:
-    | "waiting"
-    | "pending"
-    | "paired"
-    | "rejected"
-    | "expired"
-    | "error"
-    | "unknown";
+  status: "waiting" | "pending" | "paired" | "rejected" | "expired" | "error" | "unknown";
   hostname?: string;
   host?: string; // where the agent's link points, shown so the owner can recognise it
   version?: string;
   error?: string;
 };
 
-export async function pairingStatus(
-  code: string,
-  serverId: string,
-): Promise<PairStatus> {
+export async function pairingStatus(code: string, serverId: string): Promise<PairStatus> {
   if (!db) return { status: "unknown" };
   const [row] = await db
     .select()
     .from(schema.pairings)
-    .where(
-      and(
-        eq(schema.pairings.codeHash, hash(code)),
-        eq(schema.pairings.serverId, serverId),
-      ),
-    )
+    .where(and(eq(schema.pairings.codeHash, hash(code)), eq(schema.pairings.serverId, serverId)))
     .limit(1);
   if (!row) return { status: "unknown" };
-  const who = {
-    hostname: row.hostname ?? undefined,
-    version: row.agentVersion ?? undefined,
-  };
+  const who = { hostname: row.hostname ?? undefined, version: row.agentVersion ?? undefined };
   if (row.approvedAt) return { status: "paired", ...who };
   if (row.rejectedAt) return { status: "rejected", ...who };
   if (row.usedAt && row.pendingLinkEnc) {
-    if (row.usedAt.getTime() + APPROVE_WITHIN_MS < Date.now())
-      return { status: "expired" };
+    if (row.usedAt.getTime() + APPROVE_WITHIN_MS < Date.now()) return { status: "expired" };
     const link = decrypt(row.pendingLinkEnc, appSecret());
     let host: string | undefined;
     try {
@@ -113,36 +78,17 @@ export async function redeemPairingCode(input: {
   hostname?: string;
   version?: string;
 }): Promise<{ ok: true; pending: true } | { ok: false; error: string }> {
-  if (!db)
-    return {
-      ok: false,
-      error: "This dashboard has no database yet, so it can't pair servers",
-    };
+  if (!db) return { ok: false, error: "This dashboard has no database yet, so it can't pair servers" };
   const h = hash(input.code);
   const [row] = await db
     .select()
     .from(schema.pairings)
-    .where(
-      and(
-        eq(schema.pairings.codeHash, h),
-        isNull(schema.pairings.usedAt),
-        gt(schema.pairings.expiresAt, new Date()),
-      ),
-    )
+    .where(and(eq(schema.pairings.codeHash, h), isNull(schema.pairings.usedAt), gt(schema.pairings.expiresAt, new Date())))
     .limit(1);
-  if (!row)
-    return {
-      ok: false,
-      error:
-        "This pairing code is wrong, expired or already used. Get a new one from Add server in the dashboard.",
-    };
+  if (!row) return { ok: false, error: "This pairing code is wrong, expired or already used. Get a new one from Add server in the dashboard." };
 
   const hostname = input.hostname?.slice(0, 120) ?? null;
-  const note = (error: string) =>
-    db!
-      .update(schema.pairings)
-      .set({ error: error.slice(0, 500), hostname })
-      .where(eq(schema.pairings.codeHash, h));
+  const note = (error: string) => db!.update(schema.pairings).set({ error: error.slice(0, 500), hostname }).where(eq(schema.pairings.codeHash, h));
 
   let link;
   try {
@@ -169,64 +115,28 @@ export async function redeemPairingCode(input: {
       agentVersion: input.version?.slice(0, 40) ?? null,
       pendingLinkEnc: encrypt(input.link.trim(), appSecret()),
     })
-    .where(
-      and(
-        eq(schema.pairings.codeHash, h),
-        isNull(schema.pairings.usedAt),
-        gt(schema.pairings.expiresAt, sql`now()`),
-      ),
-    )
+    .where(and(eq(schema.pairings.codeHash, h), isNull(schema.pairings.usedAt), gt(schema.pairings.expiresAt, sql`now()`)))
     .returning({ serverId: schema.pairings.serverId });
-  if (!claimed.length)
-    return {
-      ok: false,
-      error: "This pairing code was just used. Get a new one from Add server.",
-    };
+  if (!claimed.length) return { ok: false, error: "This pairing code was just used. Get a new one from Add server." };
   return { ok: true, pending: true };
 }
 
 /** The owner approves (link saved, data starts flowing) or rejects (link discarded). */
-export async function decidePairing(
-  code: string,
-  serverId: string,
-  approve: boolean,
-): Promise<{ ok: boolean; error?: string }> {
+export async function decidePairing(code: string, serverId: string, approve: boolean): Promise<{ ok: boolean; error?: string }> {
   if (!db) return { ok: false, error: "No database connected" };
   const [row] = await db
     .select()
     .from(schema.pairings)
-    .where(
-      and(
-        eq(schema.pairings.codeHash, hash(code)),
-        eq(schema.pairings.serverId, serverId),
-      ),
-    )
+    .where(and(eq(schema.pairings.codeHash, hash(code)), eq(schema.pairings.serverId, serverId)))
     .limit(1);
   if (!row?.usedAt || !row.pendingLinkEnc || row.approvedAt || row.rejectedAt)
-    return {
-      ok: false,
-      error: "There's nothing waiting for approval with this code.",
-    };
-  if (row.usedAt.getTime() + APPROVE_WITHIN_MS < Date.now())
-    return {
-      ok: false,
-      error:
-        "This request expired. Get a new command on this page and run it again.",
-    };
+    return { ok: false, error: "There's nothing waiting for approval with this code." };
+  if (row.usedAt.getTime() + APPROVE_WITHIN_MS < Date.now()) return { ok: false, error: "This request expired. Run the install command again." };
   const link = decrypt(row.pendingLinkEnc, appSecret());
-  if (approve && !link)
-    return {
-      ok: false,
-      error:
-        "The saved link can't be read. Get a new command on this page and run it again.",
-    };
+  if (approve && !link) return { ok: false, error: "The saved link can't be read. Run the install command again." };
   const claimed = await db
     .update(schema.pairings)
-    .set(
-      approve
-        ? { approvedAt: new Date(), pendingLinkEnc: null }
-        : { rejectedAt: new Date(), pendingLinkEnc: null },
-    )
+    .set(approve ? { approvedAt: new Date(), pendingLinkEnc: null } : { rejectedAt: new Date(), pendingLinkEnc: null })
     .where(
       and(
         eq(schema.pairings.codeHash, row.codeHash),
@@ -236,8 +146,7 @@ export async function decidePairing(
       ),
     )
     .returning({ codeHash: schema.pairings.codeHash });
-  if (!claimed.length)
-    return { ok: false, error: "This request was already answered." };
+  if (!claimed.length) return { ok: false, error: "This request was already answered." };
   if (approve && link) {
     try {
       await saveLink(serverId, link);
@@ -248,10 +157,7 @@ export async function decidePairing(
         .set({ approvedAt: null, pendingLinkEnc: row.pendingLinkEnc })
         .where(eq(schema.pairings.codeHash, row.codeHash))
         .catch(() => {});
-      return {
-        ok: false,
-        error: `Couldn't save the server: ${(e as Error).message}. Try Approve again.`,
-      };
+      return { ok: false, error: `Couldn't save the server: ${(e as Error).message}. Try Approve again.` };
     }
   }
   return { ok: true };

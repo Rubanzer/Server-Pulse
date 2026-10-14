@@ -1,40 +1,19 @@
 "use client";
 
-import { memo, useEffect, useId, useMemo, useRef, useState } from "react";
-import { nearestIndex, type Gap, type GapReason } from "@/lib/algo";
+import { memo, useEffect, useMemo, useRef, useState } from "react";
+import { CartesianGrid, Line, LineChart, ReferenceArea, ResponsiveContainer, Tooltip, XAxis, YAxis } from "recharts";
+import type { Gap, GapReason } from "@/lib/algo";
 import type { Point } from "@/lib/charts";
-import { axisNum, COLORS, DASHES, fmtNum, type SeriesDef } from "./chart-utils";
+import { COLORS, fmtNum, type SeriesDef } from "./chart-utils";
 
 export { fmtNum, Legend } from "./chart-utils";
 
-// Hand-drawn SVG (no chart library): the whole History page used to freeze for a quarter second
-// (seconds on a TV) inside Recharts. Formatters are created once, never per tick or per hover.
-const TIME = new Intl.DateTimeFormat(undefined, {
-  hour: "2-digit",
-  minute: "2-digit",
-});
-const DAY = new Intl.DateTimeFormat(undefined, {
-  month: "short",
-  day: "numeric",
-});
-const MONTH = new Intl.DateTimeFormat(undefined, {
-  month: "short",
-  year: "numeric",
-}); // "Oct 2026", not "Oct 26" (a day?)
-const FULL = new Intl.DateTimeFormat(undefined, {
-  year: "numeric",
-  month: "numeric",
-  day: "numeric",
-  hour: "numeric",
-  minute: "2-digit",
-  second: "2-digit",
-});
-
-const fmtTime = (t: number, span: number) =>
-  (span <= 2 * 86400 ? TIME : span <= 120 * 86400 ? DAY : MONTH).format(
-    t * 1000,
-  );
-const fmtFull = (t: number) => FULL.format(t * 1000);
+function fmtTime(t: number, span: number) {
+  const d = new Date(t * 1000);
+  if (span <= 2 * 86400) return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  if (span <= 120 * 86400) return d.toLocaleDateString([], { month: "short", day: "numeric" });
+  return d.toLocaleDateString([], { month: "short", year: "numeric" }); // "Oct 2026", not "Oct 26" (a day?)
+}
 
 export const GAP_LABEL: Record<GapReason, string> = {
   off: "Server off",
@@ -43,376 +22,129 @@ export const GAP_LABEL: Record<GapReason, string> = {
   nodata: "No data",
 };
 
+/** Evenly spaced axis ticks over the requested window (Recharts picks too few on a fixed time domain). */
+const evenTicks = ([a, b]: [number, number], n = 6) => Array.from({ length: n }, (_, i) => Math.round(a + ((b - a) * i) / (n - 1)));
+/** Axis labels stay short: 13,249,355 → 13M, so they never get cut off. */
+const compact = new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 });
+const axisNum = (v: number) => (Math.abs(v) >= 10_000 ? compact.format(v) : fmtNum(v));
+
 /** Shaded stretches: a gap (with its reason) or the time before monitoring started. */
-type Band = {
-  from: number;
-  to: number;
-  label: string;
-  kind: "gap" | "off" | "before";
-};
+type Band = { from: number; to: number; label: string; kind: "gap" | "before" };
 
-/** Layout in rem, so axes and text grow with the TV root font size. */
-const PAD = { l: 2.75, r: 0.5, t: 0.5, b: 1.75 };
-const FONT = 0.6875;
+// Recharts 3 mouse state: the hovered x value and its pixel position inside the chart
+type Ev = { activeLabel?: number | string; activeCoordinate?: { x: number } } | null;
+type Handlers = { down: (e: Ev) => void; move: (e: Ev) => void; up: () => void };
 
-type Size = { w: number; h: number; rem: number };
-type Geo = {
-  rem: number;
-  width: number;
-  height: number;
-  pl: number;
-  pt: number;
-  pw: number;
-  ph: number;
-  x0: number;
-  x1: number;
-  span: number;
-  top: number;
-  yTicks: number[];
-  xTicks: number[];
-  ts: number[];
-  paths: string[];
-};
-
-const xOf = (g: Geo, t: number) => g.pl + ((t - g.x0) / (g.x1 - g.x0)) * g.pw;
-const yOf = (g: Geo, v: number) => g.pt + g.ph - (v / g.top) * g.ph;
-const ok = (v: number | null | undefined): v is number =>
-  v != null && Number.isFinite(v);
-
-/** y axis 0…top: the fixed maximum when the data fits under it, else a nice 1/2/5 step (whole-number labels stay true). */
-function yScale(dataMax: number, yMax?: number) {
-  if (yMax !== undefined && dataMax <= yMax)
-    return { top: yMax, step: yMax / 4 };
-  if (!(dataMax > 0)) return { top: 1, step: 0.25 };
-  const raw = dataMax / 4;
-  const p = 10 ** Math.floor(Math.log10(raw));
-  const step = [1, 2, 5, 10]
-    .map((k) => k * p)
-    .find((s) => s >= raw * (1 - 1e-9))!;
-  return { top: Math.ceil(dataMax / step - 1e-9) * step, step };
-}
-
-function geometry(
-  points: Point[],
-  series: SeriesDef[],
-  size: Size,
-  domain: [number, number] | undefined,
-  yMax: number | undefined,
-): Geo {
-  const { w: width, h: height, rem } = size;
-  const pl = PAD.l * rem;
-  const pt = PAD.t * rem;
-  const pw = Math.max(1, width - pl - PAD.r * rem);
-  const ph = Math.max(1, height - pt - PAD.b * rem);
-  const ts = points.map((p) => p.t);
-  let [x0, x1] = domain ?? [ts[0]!, ts[ts.length - 1]!];
-  if (x1 <= x0) [x0, x1] = [x0 - 1800, x1 + 1800]; // a single point: an hour around it
-  const span = domain
-    ? x1 - x0
-    : points.length > 1
-      ? ts[ts.length - 1]! - ts[0]!
-      : 3600;
-
-  let dataMax = 0;
-  for (const p of points)
-    for (const s of series) {
-      const v = p.v[s.key];
-      if (ok(v) && v > dataMax) dataMax = v;
-    }
-  const { top, step } = yScale(dataMax, yMax);
-  const yTicks: number[] = [];
-  for (let i = 0, n = Math.round(top / step); i <= n; i++)
-    yTicks.push(i * step);
-
-  // evenly spaced time labels, as many as fit (~7 rem each)
-  const nx = Math.max(2, Math.min(6, Math.floor(pw / (7 * rem)) + 1));
-  const xTicks = Array.from({ length: nx }, (_, i) =>
-    Math.round(x0 + ((x1 - x0) * i) / (nx - 1)),
-  );
-
-  const g: Geo = {
-    rem,
-    width,
-    height,
-    pl,
-    pt,
-    pw,
-    ph,
-    x0,
-    x1,
-    span,
-    top,
-    yTicks,
-    xTicks,
-    ts,
-    paths: [],
-  };
-  const kx = pw / (x1 - x0);
-  const ky = ph / top;
-  const r = (v: number) => Math.round(v * 10) / 10;
-  // straight segments (curves overshoot next to gaps), pen lifted at every missing value: a line never crosses a gap
-  g.paths = series.map((s) => {
-    let d = "";
-    let run = 0;
-    for (let i = 0; i < points.length; i++) {
-      const v = points[i]!.v[s.key];
-      if (!ok(v)) {
-        if (run === 1) d += "h1.5"; // a lone reading between gaps still shows as a short tick
-        run = 0;
-        continue;
-      }
-      d +=
-        (run++ ? "L" : "M") +
-        r(pl + (ts[i]! - x0) * kx) +
-        "," +
-        r(pt + ph - v * ky);
-    }
-    if (run === 1) d += "h1.5";
-    return d;
-  });
-  return g;
-}
-
-/** The expensive part: memoized on geometry, so hover and drag never re-render it. */
-const Plot = memo(function Plot({
-  g,
-  bands,
+/** The expensive part. Memoized with stable handlers, so drag-selection updates never re-render it. */
+const Chart = memo(function Chart({
+  rows,
   series,
-  id,
+  span,
+  yMax,
+  handlers,
+  domain,
+  bands,
 }: {
-  g: Geo;
-  bands: Band[];
+  rows: Record<string, number>[];
   series: SeriesDef[];
-  id: string;
+  span: number;
+  yMax?: number;
+  handlers?: Handlers;
+  domain?: [number, number];
+  bands: Band[];
 }) {
-  const font = FONT * g.rem;
+  const unit = series[0]?.unit ?? "";
+  const width = domain ? domain[1] - domain[0] : span;
   return (
-    <svg
-      width={g.width}
-      height={g.height}
-      className="absolute inset-0 block"
-      style={{ fontSize: `${FONT}rem` }}
-      aria-hidden
-    >
-      <defs>
-        <clipPath id={`${id}c`}>
-          <rect x={g.pl} y={0} width={g.pw} height={g.height} />
-        </clipPath>
-        {[45, -45].map((a) => (
-          <pattern
-            key={a}
-            id={`${id}h${a}`}
-            width="6"
-            height="6"
-            patternUnits="userSpaceOnUse"
-            patternTransform={`rotate(${a})`}
-          >
-            <line
-              x1="0"
-              y1="0"
-              x2="0"
-              y2="6"
-              stroke="var(--color-muted)"
-              strokeWidth="1.5"
-              strokeOpacity="0.6"
-            />
+    <ResponsiveContainer width="100%" height="100%" debounce={50}>
+      <LineChart
+        data={rows}
+        margin={{ top: 8, right: 8, bottom: 0, left: -8 }}
+        onMouseDown={handlers ? (e) => handlers.down(e as Ev) : undefined}
+        onMouseMove={handlers ? (e) => handlers.move(e as Ev) : undefined}
+        onMouseUp={handlers?.up}
+        onMouseLeave={handlers?.up}
+      >
+        <defs>
+          <pattern id="sp-hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+            <line x1="0" y1="0" x2="0" y2="6" stroke="var(--color-muted)" strokeWidth="1" strokeOpacity="0.35" />
           </pattern>
-        ))}
-      </defs>
-      {g.yTicks.map((v, i) => {
-        const y = yOf(g, v);
-        return (
-          <g key={i}>
-            <line
-              x1={g.pl}
-              x2={g.pl + g.pw}
-              y1={y}
-              y2={y}
-              stroke="var(--color-line)"
-            />
-            <text
-              x={g.pl - 0.375 * g.rem}
-              y={y}
-              dy="0.32em"
-              textAnchor="end"
-              fill="var(--color-muted)"
-            >
-              {axisNum(v, g.top)}
-            </text>
-          </g>
-        );
-      })}
-      {g.xTicks.map((t, i) => (
-        // edge labels anchor inward: the first never runs into the y axis' "0", the last is never cut off
-        <text
-          key={i}
-          x={xOf(g, t)}
-          y={g.pt + g.ph + 1.25 * g.rem}
-          textAnchor={
-            i === 0 ? "start" : i === g.xTicks.length - 1 ? "end" : "middle"
-          }
-          fill="var(--color-muted)"
-        >
-          {fmtTime(t, g.span)}
-        </text>
-      ))}
-      <g clipPath={`url(#${id}c)`}>
-        {bands.map((b) => {
-          const a = Math.max(g.pl, xOf(g, b.from));
-          const z = Math.min(g.pl + g.pw, xOf(g, b.to));
-          if (z <= g.pl || a >= g.pl + g.pw) return null;
-          const w = Math.max(3, z - a); // a short gap still shows
-          const x = Math.min(a, g.pl + g.pw - w);
-          const fits = z - a >= b.label.length * font * 0.55 + 8; // a label only where it fits; the tooltip names narrow ones
-          return (
-            <g key={`${b.kind}${b.from}`}>
-              {b.kind === "before" ? (
-                <rect
-                  x={x}
-                  y={g.pt}
-                  width={w}
-                  height={g.ph}
-                  fill="var(--color-paper)"
-                  fillOpacity={0.8}
-                />
-              ) : (
-                <>
-                  {b.kind === "off" && (
-                    <rect
-                      x={x}
-                      y={g.pt}
-                      width={w}
-                      height={g.ph}
-                      fill="var(--color-muted)"
-                      fillOpacity={0.12}
-                    />
-                  )}
-                  <rect
-                    x={x}
-                    y={g.pt}
-                    width={w}
-                    height={g.ph}
-                    fill={`url(#${id}h${b.kind === "off" ? -45 : 45})`}
-                  />
-                </>
-              )}
-              {fits && (
-                <text
-                  x={(a + z) / 2}
-                  y={g.pt + font + 4}
-                  textAnchor="middle"
-                  fill="var(--color-muted)"
-                >
-                  {b.label}
-                </text>
-              )}
-            </g>
-          );
-        })}
-        {g.paths.map((d, i) => (
-          <path
-            key={series[i]!.key}
-            d={d}
-            fill="none"
-            stroke={COLORS[i % COLORS.length]}
-            strokeWidth={1.6}
-            strokeDasharray={DASHES[i % DASHES.length]}
-            strokeLinejoin="round"
+        </defs>
+        <CartesianGrid vertical={false} />
+        {bands.map((b) => (
+          <ReferenceArea
+            key={`${b.kind}${b.from}`}
+            x1={b.from}
+            x2={b.to}
+            ifOverflow="hidden"
+            fill={b.kind === "gap" ? "url(#sp-hatch)" : "var(--color-paper)"}
+            fillOpacity={b.kind === "gap" ? 1 : 0.8}
+            stroke="none"
+            // a label only where it fits; narrow bands still show the hatch and the reason on hover below
+            label={(b.to - b.from) / width > 0.12 ? { value: b.label, position: "insideTop", fontSize: 11, fill: "var(--color-muted)" } : undefined}
           />
         ))}
-      </g>
-    </svg>
-  );
-});
-
-/** The hovered point: a cursor line, a dot per series and the tooltip. Cheap to re-render. */
-const Hover = memo(function Hover({
-  g,
-  p,
-  series,
-  band,
-}: {
-  g: Geo;
-  p: Point;
-  series: SeriesDef[];
-  band: Band | undefined;
-}) {
-  const x = xOf(g, p.t);
-  return (
-    <>
-      <svg
-        width={g.width}
-        height={g.height}
-        className="pointer-events-none absolute inset-0 block"
-        aria-hidden
-      >
-        <line
-          x1={x}
-          x2={x}
-          y1={g.pt}
-          y2={g.pt + g.ph}
-          stroke="var(--color-muted)"
-          strokeOpacity={0.6}
+        <XAxis
+          dataKey="t"
+          type="number"
+          scale="time"
+          domain={domain ?? ["dataMin", "dataMax"]}
+          ticks={domain ? evenTicks(domain) : undefined}
+          allowDataOverflow
+          tickFormatter={(t: number) => fmtTime(t, span)}
+          minTickGap={48}
+          tickLine={false}
+          axisLine={false}
         />
-        {series.map((s, i) => {
-          const v = p.v[s.key];
-          return ok(v) ? (
-            <circle
-              key={s.key}
-              cx={x}
-              cy={yOf(g, v)}
-              r={3}
-              fill={COLORS[i % COLORS.length]}
-              stroke="var(--color-surface)"
-              strokeWidth={2}
-            />
-          ) : null;
-        })}
-      </svg>
-      <div
-        className="pointer-events-none absolute top-1 z-10 max-w-[80%] rounded-lg border border-line bg-surface px-2 py-1 text-xs shadow-sm"
-        // opens away from the nearer edge, so it never needs measuring
-        style={x < g.width / 2 ? { left: x + 12 } : { right: g.width - x + 12 }}
-      >
-        <p className="text-muted">
-          {band
-            ? `${band.label}: ${fmtFull(band.from)} to ${fmtFull(band.to)}`
-            : fmtFull(p.t)}
-        </p>
+        <YAxis width={52} domain={[0, yMax ?? "auto"]} tickFormatter={axisNum} tickLine={false} axisLine={false} allowDecimals />
+        <Tooltip
+          isAnimationActive={false}
+          contentStyle={{ background: "var(--color-surface)", border: "1px solid var(--color-line)", borderRadius: 8, fontSize: 12 }}
+          labelFormatter={(t) => {
+            const at = Number(t);
+            const band = bands.find((b) => at >= b.from && at <= b.to);
+            const when = new Date(at * 1000).toLocaleString();
+            return band ? `${band.label}: ${new Date(band.from * 1000).toLocaleString()} to ${new Date(band.to * 1000).toLocaleString()}` : when;
+          }}
+          formatter={(v, name) => {
+            const s = series.find((x) => x.key === name);
+            return [v == null ? "no data" : fmtNum(Number(v), s?.unit ?? unit), s?.label ?? String(name)];
+          }}
+        />
         {series.map((s, i) => (
-          <p
+          <Line
             key={s.key}
-            className="whitespace-nowrap"
-            style={{ color: COLORS[i % COLORS.length] }}
-          >
-            {s.label}:{" "}
-            <span className="font-medium text-ink">
-              {ok(p.v[s.key]) ? fmtNum(p.v[s.key], s.unit) : "no data"}
-            </span>
-          </p>
+            type="linear" // monotone curves overshoot next to gaps; straight segments never invent values
+            dataKey={s.key}
+            name={s.key}
+            stroke={COLORS[i % COLORS.length]}
+            strokeWidth={1.6}
+            dot={false}
+            activeDot={{ r: 3 }}
+            isAnimationActive={false}
+            connectNulls={false}
+          />
         ))}
-      </div>
-    </>
+      </LineChart>
+    </ResponsiveContainer>
   );
 });
 
-/** Line chart over unix-second points. Drag across it to zoom when `onZoom` is given (HIS-3); arrow keys step the tooltip. */
+/** Line chart over unix-second points. Drag across it to zoom when `onZoom` is given (HIS-3). */
 export function SeriesChart({
   points,
   series,
-  height,
+  height = 220,
   yMax,
   onZoom,
   domain,
   gaps,
   firstSample,
   empty = "No data for this range yet.",
-  label,
 }: {
   points: Point[];
   series: SeriesDef[];
-  /** px or any CSS length; default 13.75rem (grows with the TV root size) */
-  height?: number | string;
+  height?: number;
   yMax?: number;
   onZoom?: (from: number, to: number) => void;
   /** the window that was asked for: the axis covers it even where there's no data */
@@ -422,168 +154,67 @@ export function SeriesChart({
   firstSample?: number | null;
   /** what to say when there are no points at all */
   empty?: string;
-  /** accessible name; defaults to the series labels */
-  label?: string;
 }) {
-  const wrap = useRef<HTMLDivElement>(null);
-  const id = useId();
-  const [size, setSize] = useState<Size | null>(null);
-  const has = points.length > 0;
-  useEffect(() => {
-    const el = wrap.current;
-    if (!el || !has) return;
-    const ro = new ResizeObserver(() => {
-      const rem =
-        parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
-      const w = el.clientWidth;
-      const h = el.clientHeight;
-      setSize((s) =>
-        s && s.w === w && s.h === h && s.rem === rem ? s : { w, h, rem },
-      );
-    });
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, [has]);
-
-  const g = useMemo(
-    () =>
-      size && size.w > 0 && has
-        ? geometry(points, series, size, domain, yMax)
-        : null,
-    [points, series, size, domain, yMax, has],
-  );
-
+  const rows = useMemo(() => points.map((p) => ({ t: p.t, ...p.v })), [points]);
+  const span = domain ? domain[1] - domain[0] : points.length > 1 ? points[points.length - 1]!.t - points[0]!.t : 3600;
   const bands = useMemo<Band[]>(() => {
-    const out: Band[] = (gaps ?? []).map((x) => ({
-      from: x.from,
-      to: x.to,
-      label: GAP_LABEL[x.reason],
-      kind: x.reason === "off" ? "off" : "gap",
-    }));
+    const out: Band[] = (gaps ?? []).map((g) => ({ from: g.from, to: g.to, label: GAP_LABEL[g.reason], kind: "gap" }));
     if (domain && firstSample && firstSample > domain[0])
       out.unshift({
         from: domain[0],
         to: Math.min(firstSample, domain[1]),
-        label: `Before monitoring started (${DAY.format(firstSample * 1000)})`,
+        label: `Before monitoring started (${new Date(firstSample * 1000).toLocaleDateString([], { day: "numeric", month: "short" })})`,
         kind: "before",
       });
     return out;
   }, [gaps, domain, firstSample]);
 
-  const [hover, setHover] = useState<{ i: number; kbd: boolean } | null>(null);
-  // selection lives in a ref + a tiny overlay; the plot itself is not re-rendered while dragging
+  // selection lives in a ref + a tiny overlay; the chart itself is not re-rendered while dragging
   const sel = useRef<{ a: number; ax: number; b?: number } | null>(null);
   const [box, setBox] = useState<{ x1: number; x2: number } | null>(null);
   const zoom = useRef(onZoom);
   useEffect(() => {
     zoom.current = onZoom;
   });
-
-  // pointer → x inside the plot (clamped) and its time
-  const at = (e: React.PointerEvent) => {
-    if (!g) return null;
-    const x = Math.min(
-      g.pl + g.pw,
-      Math.max(g.pl, e.clientX - wrap.current!.getBoundingClientRect().left),
+  const handlers = useMemo<Handlers>(
+    () => ({
+      down: (e) => {
+        const x = e?.activeCoordinate?.x;
+        if (e?.activeLabel === undefined || x === undefined) return;
+        sel.current = { a: Number(e.activeLabel), ax: x };
+      },
+      move: (e) => {
+        const s = sel.current;
+        const x = e?.activeCoordinate?.x;
+        if (!s || e?.activeLabel === undefined || x === undefined) return;
+        s.b = Number(e.activeLabel);
+        setBox({ x1: s.ax, x2: x });
+      },
+      up: () => {
+        const s = sel.current;
+        sel.current = null;
+        setBox(null);
+        if (s?.b !== undefined && s.a !== s.b) zoom.current?.(Math.min(s.a, s.b), Math.max(s.a, s.b));
+      },
+    }),
+    [],
+  );
+  if (!points.length)
+    return (
+      <div style={{ height }} className="grid place-items-center px-6 text-center text-sm text-muted">
+        {empty}
+      </div>
     );
-    return { x, t: g.x0 + ((x - g.pl) / g.pw) * (g.x1 - g.x0) };
-  };
-  const point = (e: React.PointerEvent) => {
-    const p = at(e);
-    if (p && g) setHover({ i: nearestIndex(g.ts, p.t), kbd: false });
-    return p;
-  };
-  const end = (commit: boolean) => {
-    const s = sel.current;
-    sel.current = null;
-    setBox(null);
-    if (commit && s?.b !== undefined && s.a !== s.b)
-      zoom.current?.(Math.min(s.a, s.b), Math.max(s.a, s.b));
-  };
-
-  const p = hover && g ? points[hover.i] : undefined;
-  const band = p && bands.find((b) => p.t >= b.from && p.t <= b.to);
-  const name = label ?? `${series.map((s) => s.label).join(", ")} chart`;
 
   return (
-    <div className="relative" style={{ height: height ?? "13.75rem" }}>
-      {!has ? (
-        <div className="grid h-full place-items-center px-6 text-center text-sm text-muted">
-          {empty}
-        </div>
-      ) : (
+    <div style={{ height }} className={`relative ${onZoom ? "cursor-crosshair select-none" : ""}`}>
+      <Chart rows={rows} series={series} span={span} yMax={yMax} handlers={onZoom ? handlers : undefined} domain={domain} bands={bands} />
+      {box && (
         <div
-          ref={wrap}
-          role="img"
-          aria-label={name}
-          tabIndex={0}
-          className={`absolute inset-0 rounded-sm ${onZoom ? "cursor-crosshair select-none" : ""}`}
-          onPointerDown={(e) => {
-            const q = point(e);
-            // touch keeps scrolling the page; a mouse or pen drag selects a range to zoom into
-            if (!q || !onZoom || e.pointerType === "touch" || e.button !== 0)
-              return;
-            e.currentTarget.setPointerCapture(e.pointerId);
-            sel.current = { a: q.t, ax: q.x };
-          }}
-          onPointerMove={(e) => {
-            const q = point(e);
-            const s = sel.current;
-            if (!q || !s) return;
-            if (Math.abs(q.x - s.ax) < 4) return; // a click with a shaky hand is not a zoom
-            s.b = q.t;
-            setBox({ x1: s.ax, x2: q.x });
-          }}
-          onPointerUp={() => end(true)}
-          onPointerCancel={() => end(false)}
-          onPointerLeave={() => {
-            if (!sel.current) setHover(null);
-          }}
-          onBlur={() => setHover(null)}
-          onKeyDown={(e) => {
-            const n = points.length;
-            const i = hover?.i;
-            const next =
-              e.key === "ArrowRight"
-                ? i === undefined
-                  ? 0
-                  : Math.min(n - 1, i + 1)
-                : e.key === "ArrowLeft"
-                  ? i === undefined
-                    ? n - 1
-                    : Math.max(0, i - 1)
-                  : e.key === "Home"
-                    ? 0
-                    : e.key === "End"
-                      ? n - 1
-                      : null;
-            if (e.key === "Escape") setHover(null);
-            if (next === null) return;
-            e.preventDefault();
-            setHover({ i: next, kbd: true });
-          }}
-        >
-          {g && <Plot g={g} bands={bands} series={series} id={id} />}
-          {g && p && <Hover g={g} p={p} series={series} band={band} />}
-          {box && (
-            <div
-              className="pointer-events-none absolute rounded-sm bg-select ring-1 ring-signal"
-              style={{
-                top: `${PAD.t}rem`,
-                bottom: `${PAD.b}rem`,
-                left: Math.min(box.x1, box.x2),
-                width: Math.abs(box.x2 - box.x1),
-              }}
-            />
-          )}
-        </div>
+          className="pointer-events-none absolute bottom-7 top-2 rounded-sm bg-signal/15 ring-1 ring-signal/40"
+          style={{ left: Math.min(box.x1, box.x2), width: Math.abs(box.x2 - box.x1) }}
+        />
       )}
-      {/* keyboard stepping is read out; role="img" hides its children, so this sits beside it */}
-      <p className="sr-only" aria-live="polite">
-        {hover?.kbd && p
-          ? `${band ? band.label + ", " : ""}${fmtFull(p.t)}: ${series.map((s) => `${s.label} ${ok(p.v[s.key]) ? fmtNum(p.v[s.key], s.unit) : "no data"}`).join(", ")}`
-          : ""}
-      </p>
     </div>
   );
 }

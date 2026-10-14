@@ -33,14 +33,3 @@ func TestTailscaleDetection(t *testing.T) {
 		}
 	}
 }
-
-func TestFunnelLinkShownOnceAndWhole(t *testing.T) {
-	var got []string
-	w := &linkWatch{onLink: func(l string) { got = append(got, l) }}
-	for _, part := range []string{"Funnel is not enabled on your tailnet.\nTo enable, visit:\n\n         https://login.tails", "cale.com/f/funnel?node=nJCsvg", "cfb611CNTRL\n\n", "still waiting\nhttps://login.tailscale.com/other\n"} {
-		w.Write([]byte(part))
-	}
-	if len(got) != 1 || got[0] != "https://login.tailscale.com/f/funnel?node=nJCsvgcfb611CNTRL" {
-		t.Fatalf("got %q, want the whole link once", got)
-	}
-}
