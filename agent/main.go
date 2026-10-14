@@ -555,7 +555,18 @@ func cmdInstall(args []string) error {
 	checkPublic(pub)
 	if *pair != "" {
 		step("Connecting this server to your dashboard")
-		if err := pairWithDashboard(cfg.Origins[0], *pair, link); err != nil {
+		err := pairWithDashboard(cfg.Origins[0], *pair, link)
+		// the code stays valid for 10 minutes: when the dashboard just can't reach this server yet (Funnel
+		// being allowed, a new certificate, a network blip), keep trying for a while instead of giving up
+		for try := 1; err != nil && pairRetryable(err) && try <= pairRetries; try++ {
+			if try == 1 {
+				fmt.Println("  … " + cleanLine(err.Error()))
+				fmt.Printf("    Trying again every %d s for up to %d minutes (Ctrl+C stops it).\n", int(pairRetryEvery/time.Second), int(pairRetryEvery*pairRetries/time.Minute))
+			}
+			time.Sleep(pairRetryEvery)
+			err = pairWithDashboard(cfg.Origins[0], *pair, link)
+		}
+		if err != nil {
 			fmt.Println("  ! Pairing didn't finish:", err)
 			fmt.Println("    You can connect by hand instead:")
 			printLink(cfg, host)
