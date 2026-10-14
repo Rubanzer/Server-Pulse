@@ -1,39 +1,21 @@
 "use client";
 
-import {
-  Fragment,
-  memo,
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  useSyncExternalStore,
-} from "react";
+import { Fragment, memo, useEffect, useMemo, useRef, useState } from "react";
 import { RingBuffer } from "@/lib/algo";
 import type { Point } from "@/lib/charts";
-import { toLogin } from "@/lib/navigate";
 import { mergeFrame, type PulseFrame } from "@/lib/pulse";
 import { PULSE_IDLE_MS, readIdle } from "./stream-utils";
 import { AnimatedNumber } from "./animated-number";
 import { Legend } from "./chart-utils";
 import { LiveChart } from "./live-chart";
 
-type Conn =
-  | "connecting"
-  | "live"
-  | "polling"
-  | "reconnecting"
-  | "paused"
-  | "budget"
-  | "noserver"
-  | "unsupported";
+type Conn = "connecting" | "live" | "polling" | "reconnecting" | "paused" | "unsupported" | "error";
 const HISTORY = 300; // seconds of client-side history for the sparklines
 
 // ---------- formatting ----------
 
 function size(mib: number) {
-  if (mib >= 1024 * 1024)
-    return `${(mib / 1024 / 1024).toFixed(mib >= 10 * 1024 * 1024 ? 1 : 2)} TiB`;
+  if (mib >= 1024 * 1024) return `${(mib / 1024 / 1024).toFixed(mib >= 10 * 1024 * 1024 ? 1 : 2)} TiB`;
   if (mib >= 1024) return `${(mib / 1024).toFixed(1)} GiB`;
   return `${Math.round(mib)} MiB`;
 }
@@ -42,8 +24,7 @@ function rate(kib: number) {
   if (kib >= 1024) return `${(kib / 1024).toFixed(1)} MiB/s`;
   return `${Math.round(kib)} KiB/s`;
 }
-const mbit = (kbit: number) =>
-  `${(kbit / 1000).toFixed(kbit >= 100_000 ? 0 : 1)} Mbit/s`;
+const mbit = (kbit: number) => `${(kbit / 1000).toFixed(kbit >= 100_000 ? 0 : 1)} Mbit/s`;
 function uptime(sec: number) {
   const d = Math.floor(sec / 86400);
   const h = Math.floor((sec % 86400) / 3600);
@@ -53,83 +34,36 @@ function uptime(sec: number) {
 
 // ---------- color: sequential ramps, status color only past thresholds ----------
 
-// The core map paints a theme color at an opacity over the card's surface, blended here in JS (no
-// color-mix(): older TV and kiosk engines drop it). The ramps stop short of solid, so a busy cell never
-// reads darker than the warn/crit status colors.
-type Heat = { k: "signal" | "warn" | "crit" | "paper"; a: number };
-const utilHeat = (p: number): Heat =>
-  p >= 95
-    ? { k: "crit", a: 1 }
-    : p >= 85
-      ? { k: "warn", a: 1 }
-      : { k: "signal", a: (8 + p * 0.55) / 100 };
-const tempHeat = (t: number): Heat =>
-  !t
-    ? { k: "paper", a: 1 }
-    : t >= 85
-      ? { k: "crit", a: 1 }
-      : {
-          k: "warn",
-          a: Math.min(
-            0.75,
-            (Math.max(0, Math.min(1, (t - 35) / 50)) * 85 + 5) / 100,
-          ),
-        };
-const level = (p: number, warn = 85, crit = 95) =>
-  p >= crit ? "crit" : p >= warn ? "warn" : "ok";
+// A ramp is a solid color at an opacity over the card's surface, not color-mix(): that needs Chrome 111 /
+// Safari 16.2, and older engines (TV and kiosk browsers on big displays) drew those tiles and bars blank.
+type Tint = { c: string; a: number };
+const utilColor = (p: number): Tint =>
+  p >= 95 ? { c: "var(--color-crit)", a: 1 } : p >= 85 ? { c: "var(--color-warn)", a: 1 } : { c: "var(--color-signal)", a: (8 + p * 0.82) / 100 };
+const tempColor = (t: number): Tint =>
+  !t ? { c: "var(--color-paper)", a: 1 } : t >= 85 ? { c: "var(--color-crit)", a: 1 } : { c: "var(--color-warn)", a: (Math.max(0, Math.min(1, (t - 35) / 50)) * 85 + 5) / 100 };
+const level = (p: number, warn = 85, crit = 95) => (p >= crit ? "crit" : p >= warn ? "warn" : "ok");
 const LEVEL_TEXT = { ok: "", warn: "High", crit: "Critical" } as const;
-const LEVEL_CLASS = {
-  ok: "text-muted",
-  warn: "text-warn",
-  crit: "text-crit",
-} as const;
+const LEVEL_CLASS = { ok: "text-muted", warn: "text-warn", crit: "text-crit" } as const;
 
 // ---------- connection: direct stream from the agent, fallback to polling through the dashboard ----------
-
-const OFFLINE = "Can't reach your server right now. Trying again…";
-type DashError = Error & { status?: number; paused?: boolean };
-
-/** A dashboard API call; a non-2xx answer throws with its HTTP status (agent errors never carry one). */
-async function dashJson(url: string, signal?: AbortSignal) {
-  const res = await fetch(url, { cache: "no-store", signal });
-  const body = await res.json().catch(() => null);
-  if (!res.ok || !body)
-    throw Object.assign(new Error(body?.error ?? OFFLINE), {
-      status: res.status,
-      paused: !!body?.paused,
-    }) as DashError;
-  return body;
-}
 
 function useServerFrames() {
   const [frame, setFrame] = useState<PulseFrame | null>(null);
   const [conn, setConn] = useState<Conn>("connecting");
   const [note, setNote] = useState<string | null>(null);
   const [lastAt, setLastAt] = useState(0);
-  const [hist, setHist] = useState<{
-    cpu: Point[];
-    mem: Point[];
-    net: Point[];
-  }>({ cpu: [], mem: [], net: [] });
-  const rings = useRef({
-    cpu: new RingBuffer<Point>(HISTORY),
-    mem: new RingBuffer<Point>(HISTORY),
-    net: new RingBuffer<Point>(HISTORY),
-  });
+  const [hist, setHist] = useState<{ cpu: Point[]; mem: Point[]; net: Point[] }>({ cpu: [], mem: [], net: [] });
+  const rings = useRef({ cpu: new RingBuffer<Point>(HISTORY), mem: new RingBuffer<Point>(HISTORY), net: new RingBuffer<Point>(HISTORY) });
 
   useEffect(() => {
     let stopped = false;
     let ctrl: AbortController | null = null;
     let hiddenTimer: ReturnType<typeof setTimeout> | undefined;
     let wake: (() => void) | null = null;
-    const sleep = (ms: number) =>
-      new Promise<void>((r) => {
-        const t = setTimeout(r, ms);
-        wake = () => {
-          clearTimeout(t);
-          r();
-        };
-      });
+    const sleep = (ms: number) => new Promise<void>((r) => {
+      const t = setTimeout(r, ms);
+      wake = () => { clearTimeout(t); r(); };
+    });
 
     const onFrame = (f: PulseFrame) => {
       setFrame((prev) => mergeFrame(prev, f));
@@ -138,36 +72,21 @@ function useServerFrames() {
       const last = r.cpu.last();
       if (!last || f.t > last.t) {
         r.cpu.push({ t: f.t, v: { cpu: f.cpu.total } });
-        r.mem.push({
-          t: f.t,
-          v: { mem: f.mem.total ? (f.mem.used / f.mem.total) * 100 : 0 },
-        });
+        r.mem.push({ t: f.t, v: { mem: f.mem.total ? (f.mem.used / f.mem.total) * 100 : 0 } });
         const inn = f.net.reduce((a, n) => a + n.in, 0) / 1000;
         const out = f.net.reduce((a, n) => a + n.out, 0) / 1000;
         r.net.push({ t: f.t, v: { in: inn, out } });
-        setHist({
-          cpu: r.cpu.toArray(),
-          mem: r.mem.toArray(),
-          net: r.net.toArray(),
-        });
+        setHist({ cpu: r.cpu.toArray(), mem: r.mem.toArray(), net: r.net.toArray() });
       }
     };
 
-    let tunnel: string | undefined; // "ngrok": poll gently, every request counts against the monthly cap
-    let demo = false;
-
     async function stream(): Promise<"ended" | "fallback"> {
-      const tk = await dashJson("/api/pulse/token");
+      const tk = await fetch("/api/pulse/token", { cache: "no-store" }).then((r) => r.json());
       if (stopped) return "ended";
-      tunnel = tk?.tunnel;
-      demo = !!tk?.demo;
-      if (demo || !tk?.url) return "fallback";
+      if (tk.demo || !tk.url) return "fallback";
       ctrl = new AbortController();
       const res = await fetch(tk.url, {
-        headers: {
-          authorization: `Bearer ${tk.token}`,
-          "ngrok-skip-browser-warning": "1",
-        },
+        headers: { authorization: `Bearer ${tk.token}`, "ngrok-skip-browser-warning": "1" },
         cache: "no-store",
         signal: ctrl.signal,
       });
@@ -177,9 +96,7 @@ function useServerFrames() {
       const reader = res.body.pipeThrough(new TextDecoderStream()).getReader();
       let buf = "";
       for (;;) {
-        const { value, done } = await readIdle(reader, PULSE_IDLE_MS, () =>
-          ctrl?.abort(),
-        );
+        const { value, done } = await readIdle(reader, PULSE_IDLE_MS, () => ctrl?.abort());
         if (done) return "ended"; // the agent ends sessions after 15 min: reconnect with a fresh token
         buf += value;
         let nl;
@@ -193,17 +110,23 @@ function useServerFrames() {
 
     async function poll() {
       ctrl = new AbortController();
-      const body = await dashJson("/api/pulse", ctrl.signal);
+      const res = await fetch("/api/pulse", { cache: "no-store", signal: ctrl.signal });
+      const body = await res.json();
+      if (res.status === 404) {
+        setConn("unsupported");
+        setNote(body.error);
+        return false;
+      }
+      if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
       setConn("polling");
-      setNote(null);
       onFrame(body as PulseFrame);
+      return true;
     }
 
     (async () => {
       let streamFails = 0;
       let useStream = true;
       let backoff = 1000;
-      let pollingSince = 0;
       while (!stopped) {
         if (document.hidden) {
           setConn("paused");
@@ -211,53 +134,26 @@ function useServerFrames() {
           continue;
         }
         try {
-          if (!useStream && !demo && Date.now() - pollingSince >= 5 * 60_000) {
-            // polling costs a dashboard request per reading: try the direct stream again now and then
-            // (the tunnel may be back); one more failure drops straight back to polling
-            useStream = true;
-            streamFails = 1;
-          }
           if (useStream) {
             const r = await stream();
-            if (r === "fallback") {
-              useStream = false;
-              pollingSince = Date.now();
-            } else await sleep(1000); // a session that ended: reconnect, but never in a tight loop
+            if (r === "fallback") useStream = false;
+            else await sleep(1000); // a session that ended: reconnect, but never in a tight loop
             streamFails = 0;
             backoff = 1000;
             continue;
           }
-          await poll();
+          if (!(await poll())) return;
           backoff = 1000;
-          await sleep(tunnel === "ngrok" ? 10_000 : 2000);
+          await sleep(2000);
         } catch (e) {
-          const err = e as DashError;
-          if (stopped || err.name === "AbortError") continue; // closed on purpose (tab hidden / unmount)
-          if (err.status === 401) {
-            stopped = true;
-            toLogin();
-            return;
-          }
-          if (err.status === 400 || err.status === 404) {
-            // no server linked yet (400) / an agent without the live view (404): retrying can't help
-            setConn(err.status === 400 ? "noserver" : "unsupported");
-            setNote(err.message);
-            return;
-          }
-          if (err.status === 429 && err.paused) {
-            setConn("budget");
-            setNote(err.message);
-            await sleep(60_000);
-            continue;
-          }
+          if (stopped || (e as Error).name === "AbortError") continue; // closed on purpose (tab hidden / unmount)
           if (useStream && ++streamFails >= 2) {
             // the browser can't reach the agent directly (e.g. ngrok's browser warning): go through the dashboard
             useStream = false;
-            pollingSince = Date.now();
             continue;
           }
           setConn("reconnecting");
-          setNote(OFFLINE); // never "stream 502" / "fetch failed": say what it means
+          setNote((e as Error).message);
           await sleep(backoff + Math.random() * 500);
           backoff = Math.min(backoff * 2, 30_000);
         }
@@ -310,61 +206,24 @@ export function ServerView() {
   }, [lastAt]);
   const stale = lastAt > 0 && staleSince === lastAt;
 
-  if (conn === "noserver")
-    return (
-      <section className="mx-auto mt-[6vh] max-w-xl rounded-xl border border-line bg-surface p-6">
-        <h1 className="text-xl font-semibold">Add your server to start</h1>
-        <p className="mt-2 text-sm text-muted">
-          {note && note !== "Connect a server first"
-            ? note
-            : "This page shows your server live: every core, memory, disks, network and its busiest processes."}
-        </p>
-        <a
-          className="mt-4 inline-block rounded-lg bg-signal px-4 py-2 text-sm font-medium text-on-signal"
-          href="/connect"
-        >
-          Add server
-        </a>
-      </section>
-    );
   if (conn === "unsupported")
     return (
       <section className="mx-auto mt-[6vh] max-w-xl rounded-xl border border-line bg-surface p-6">
-        <h1 className="text-xl font-semibold">
-          The live server view needs the Server Pulse agent
-        </h1>
+        <h1 className="text-xl font-semibold">The live server view needs the Server Pulse agent</h1>
         <p className="mt-2 text-sm text-muted">{note}</p>
         <p className="mt-4 text-sm">
-          Open{" "}
-          <a className="text-signal underline" href="/connect">
-            Add server
-          </a>{" "}
-          and run its one command on your server. It installs the latest agent
-          over the old one and keeps your history.
+          Open <a className="text-signal underline" href="/connect">Add server</a> and run its one command on your server. It installs the latest agent over the old
+          one and keeps your history.
         </p>
-      </section>
-    );
-  if (!frame && conn === "budget")
-    return (
-      <section className="mx-auto mt-[6vh] max-w-xl rounded-xl border border-line bg-surface p-6">
-        <h1 className="text-xl font-semibold">Live updates are paused</h1>
-        <p className="mt-2 text-sm text-muted">{note}</p>
       </section>
     );
   if (!frame)
     return (
-      <div
-        className="space-y-4"
-        aria-busy="true"
-        aria-label="Connecting to your server"
-      >
+      <div className="space-y-4" aria-busy="true" aria-label="Connecting to your server">
         <div className="h-14 w-72 animate-pulse rounded-lg bg-surface" />
         <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
           {[0, 1, 2, 3].map((i) => (
-            <div
-              key={i}
-              className="h-32 animate-pulse rounded-xl border border-line bg-surface"
-            />
+            <div key={i} className="h-32 animate-pulse rounded-xl border border-line bg-surface" />
           ))}
         </div>
         <div className="h-96 animate-pulse rounded-xl border border-line bg-surface" />
@@ -374,10 +233,7 @@ export function ServerView() {
 
   const f = frame;
   const memPct = f.mem.total ? (f.mem.used / f.mem.total) * 100 : 0;
-  const worstDisk = (f.disks ?? []).reduce<{
-    path: string;
-    pct: number;
-  } | null>((w, d) => {
+  const worstDisk = (f.disks ?? []).reduce<{ path: string; pct: number } | null>((w, d) => {
     const pct = d.size ? (d.used / d.size) * 100 : 0;
     return !w || pct > w.pct ? { path: d.path, pct } : w;
   }, null);
@@ -386,45 +242,21 @@ export function ServerView() {
   const threads = f.cpu.cores.length;
 
   return (
-    <div
-      className={`space-y-4 transition-opacity duration-300 ${stale ? "opacity-80" : ""}`}
-    >
+    <div className={`space-y-4 transition-opacity duration-300 ${stale ? "opacity-60" : ""}`}>
       <header className="flex flex-wrap items-end justify-between gap-3">
         <div className="min-w-0">
-          <h1
-            className="truncate text-2xl font-semibold tracking-tight max-sm:whitespace-normal max-sm:break-all"
-            title={hostname ?? f.cpu.model ?? undefined}
-          >
-            {hostname ?? f.cpu.model ?? "Your server"}
-          </h1>
+          <h1 className="truncate text-2xl font-semibold tracking-tight">{hostname ?? f.cpu.model ?? "Your server"}</h1>
           <p className="text-sm text-muted">
             {hostname && f.cpu.model ? `${f.cpu.model} · ` : ""}
-            {f.cpu.physical
-              ? `${f.cpu.physical} cores · ${threads} threads`
-              : `${threads} CPUs`}{" "}
-            · up {uptime(f.up)} · load {f.load[0].toFixed(2)}{" "}
-            <span title="1-minute load divided by CPU count">
-              ({(f.load[0] / Math.max(1, threads)).toFixed(2)}× capacity)
-            </span>
+            {f.cpu.physical ? `${f.cpu.physical} cores · ${threads} threads` : `${threads} CPUs`} · up {uptime(f.up)} · load {f.load[0].toFixed(2)}{" "}
+            <span title="1-minute load divided by CPU count">({(f.load[0] / Math.max(1, threads)).toFixed(2)}× capacity)</span>
           </p>
         </div>
-        <ConnPill conn={conn} stale={stale} />
+        <ConnPill conn={conn} stale={stale} note={note} />
       </header>
-      {note && <p className="text-sm text-warn">{note}</p>}
 
-      <section
-        aria-label="Summary"
-        className="grid grid-cols-1 gap-3 min-[420px]:grid-cols-2 lg:grid-cols-4"
-      >
-        <Kpi
-          label="CPU"
-          value={f.cpu.total}
-          unit="%"
-          lv={level(f.cpu.total)}
-          spark={hist.cpu}
-          series="cpu"
-          yMax={100}
-        />
+      <section aria-label="Summary" className="grid grid-cols-1 gap-3 min-[420px]:grid-cols-2 lg:grid-cols-4">
+        <Kpi label="CPU" value={f.cpu.total} unit="%" lv={level(f.cpu.total)} spark={hist.cpu} series="cpu" yMax={100} />
         <Kpi
           label="Memory"
           value={memPct}
@@ -435,13 +267,7 @@ export function ServerView() {
           series="mem"
           yMax={100}
         />
-        <Kpi
-          label="Fullest disk"
-          value={worstDisk?.pct}
-          unit="%"
-          sub={worstDisk?.path}
-          lv={level(worstDisk?.pct ?? 0, 80, 90)}
-        />
+        <Kpi label="Fullest disk" value={worstDisk?.pct} unit="%" sub={worstDisk?.path} lv={level(worstDisk?.pct ?? 0, 80, 90)} />
         <article className="@container flex min-w-0 flex-col gap-2 rounded-xl border border-line bg-surface p-4">
           <h2 className="text-sm font-medium text-muted">Network</h2>
           <p className="whitespace-nowrap font-cond text-[clamp(1rem,10cqi,1.5rem)] font-semibold leading-tight tabular-nums">
@@ -457,7 +283,7 @@ export function ServerView() {
 
       <div className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(0,3fr)_minmax(0,2fr)]">
         <CoreMap f={f} />
-        <div className="grid min-w-0 grid-cols-1 grid-rows-[auto_1fr] gap-3">
+        <div className="grid min-w-0 grid-cols-1 gap-3">
           <MemoryCard f={f} />
           <NetCard f={f} hist={hist.net} />
         </div>
@@ -469,7 +295,7 @@ export function ServerView() {
   );
 }
 
-function ConnPill({ conn, stale }: { conn: Conn; stale: boolean }) {
+function ConnPill({ conn, stale, note }: { conn: Conn; stale: boolean; note: string | null }) {
   const [label, cls] =
     stale && (conn === "live" || conn === "polling")
       ? ["Waiting for data…", "text-warn"]
@@ -479,17 +305,13 @@ function ConnPill({ conn, stale }: { conn: Conn; stale: boolean }) {
           ? ["Live · via dashboard", "text-ok"]
           : conn === "paused"
             ? ["Paused (tab hidden)", "text-muted"]
-            : conn === "budget"
-              ? ["Paused (ngrok budget)", "text-warn"]
-              : conn === "reconnecting"
-                ? ["Reconnecting…", "text-warn"]
-                : ["Connecting…", "text-muted"];
+            : conn === "reconnecting"
+              ? ["Reconnecting…", "text-warn"]
+              : ["Connecting…", "text-muted"];
   return (
-    <span className={`flex items-center gap-1.5 text-sm font-medium ${cls}`}>
+    <span className={`flex items-center gap-1.5 text-sm font-medium ${cls}`} title={note ?? undefined}>
       <span className="relative flex size-2.5">
-        {(conn === "live" || conn === "polling") && !stale && (
-          <span className="absolute inset-0 animate-ping rounded-full [animation-iteration-count:3] bg-current opacity-50" />
-        )}
+        {(conn === "live" || conn === "polling") && !stale && <span className="absolute inset-0 animate-ping rounded-full bg-current opacity-50" />}
         <span className="relative size-2.5 rounded-full bg-current" />
       </span>
       <span role="status" aria-live="polite">
@@ -518,40 +340,20 @@ function Kpi({
   series?: string;
   yMax?: number;
 }) {
-  const chartSeries = useMemo(
-    () => [{ key: series ?? "", label, unit }],
-    [series, label, unit],
-  );
+  const chartSeries = useMemo(() => [{ key: series ?? "", label, unit }], [series, label, unit]);
   return (
-    <article className="@container flex min-w-0 flex-col justify-start gap-2 rounded-xl border border-line bg-surface p-4">
+    <article className="@container flex min-w-0 flex-col justify-between gap-2 rounded-xl border border-line bg-surface p-4">
       <header className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-2">
         <h2 className="truncate text-sm font-medium text-muted">{label}</h2>
-        {LEVEL_TEXT[lv] && (
-          <span className={`shrink-0 text-xs font-semibold ${LEVEL_CLASS[lv]}`}>
-            ⚠ {LEVEL_TEXT[lv]}
-          </span>
-        )}
+        {LEVEL_TEXT[lv] && <span className={`shrink-0 text-xs font-semibold ${LEVEL_CLASS[lv]}`}>⚠ {LEVEL_TEXT[lv]}</span>}
       </header>
       <p className="whitespace-nowrap font-cond text-[clamp(1.75rem,16cqi,2.5rem)] font-semibold leading-none tracking-tight tabular-nums">
         <AnimatedNumber value={value} />
-        <span className="ml-1 text-[0.45em] font-medium text-muted">
-          {unit}
-        </span>
+        <span className="ml-1 text-[0.45em] font-medium text-muted">{unit}</span>
       </p>
-      {/* always there, even empty: every tile's number and sparkline sit at the same height */}
-      <p className="min-h-4 truncate text-xs text-muted">{sub}</p>
+      {sub && <p className="truncate text-xs text-muted">{sub}</p>}
       {spark && series && (
-        <div className="mt-auto">
-          <LiveChart
-            points={spark}
-            series={chartSeries}
-            windowSec={HISTORY}
-            height={36}
-            compact
-            yMax={yMax}
-            className={lv === "ok" ? "text-signal" : LEVEL_CLASS[lv]}
-          />
-        </div>
+        <LiveChart points={spark} series={chartSeries} windowSec={HISTORY} height={36} compact yMax={yMax} className={lv === "ok" ? "text-signal" : LEVEL_CLASS[lv]} />
       )}
     </article>
   );
@@ -559,207 +361,15 @@ function Kpi({
 
 // ---------- 64 cores at a glance ----------
 
-// One <canvas> instead of a cell per core: 128 DOM cells cost ~300 ms of style/layout/paint per second
-// on a TV-class CPU; one canvas pass is a few ms.
-type RGB = [number, number, number];
-type Palette = Record<
-  "surface" | "paper" | "ink" | "onSignal" | "signal" | "warn" | "crit",
-  RGB
-> & { theme: string; font: string };
-
-const lum = (c: RGB) => {
-  const [r, g, b] = c.map((v) =>
-    v / 255 <= 0.03928 ? v / 255 / 12.92 : ((v / 255 + 0.055) / 1.055) ** 2.4,
-  ) as RGB;
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
-};
-const contrast = (a: RGB, b: RGB) => {
-  const [x, y] = [lum(a), lum(b)];
-  return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
-};
-const blend = (base: RGB, top: RGB, a: number) =>
-  base.map((v, i) => Math.round(v * (1 - a) + (top[i] ?? v) * a)) as RGB;
-const css = (c: RGB) => `rgb(${c.join(",")})`;
-const BLACK: RGB = [0, 0, 0];
-const WHITE: RGB = [255, 255, 255];
-/** Ink or on-signal, whichever reads better on `bg`; pure black/white when neither reaches 4.5:1
- *  (mid-tone cells, e.g. 63°C in the dark theme): one of those two always clears ~4.6:1. */
-function textOn(bg: RGB, P: Palette) {
-  const best = (a: RGB, b: RGB) => (contrast(a, bg) >= contrast(b, bg) ? a : b);
-  const c = best(P.ink, P.onSignal);
-  return contrast(c, bg) >= 4.5 ? c : best(BLACK, WHITE);
-}
-
-/** The theme tokens as RGB (read once per theme change); the canvas normalises any CSS color to #rrggbb or rgb(). */
-function readPalette(
-  ctx: CanvasRenderingContext2D,
-  el: Element,
-  theme: string,
-): Palette {
-  const root = getComputedStyle(document.documentElement);
-  const rgb = (name: string): RGB => {
-    ctx.fillStyle = "#000";
-    ctx.fillStyle = root.getPropertyValue(`--color-${name}`).trim() || "#000";
-    const s = String(ctx.fillStyle);
-    if (s[0] === "#")
-      return [1, 3, 5].map((i) => parseInt(s.slice(i, i + 2), 16)) as RGB;
-    const m = s.match(/[\d.]+/g) ?? [];
-    return [Number(m[0] ?? 0), Number(m[1] ?? 0), Number(m[2] ?? 0)];
-  };
-  return {
-    theme,
-    font: getComputedStyle(el).fontFamily || "monospace",
-    surface: rgb("surface"),
-    paper: rgb("paper"),
-    ink: rgb("ink"),
-    onSignal: rgb("on-signal"),
-    signal: rgb("signal"),
-    warn: rgb("warn"),
-    crit: rgb("crit"),
-  };
-}
-
-// the resolved theme lives in <html data-theme>; the canvas repaints when it changes
-const subscribeTheme = (cb: () => void) => {
-  const mo = new MutationObserver(cb);
-  mo.observe(document.documentElement, {
-    attributes: true,
-    attributeFilter: ["data-theme"],
-  });
-  return () => mo.disconnect();
-};
-const getTheme = () =>
-  document.documentElement.getAttribute("data-theme") ?? "";
-const getServerTheme = () => "";
-
-/** Square cells with a 0.25rem gap across the measured width. */
-function cellGeometry(w: number, rem: number, cols: number, rows: number) {
-  const gap = rem * 0.25;
-  const cell = Math.max(0, (w - gap * (cols - 1)) / cols);
-  return { gap, cell, h: rows * cell + (rows - 1) * gap };
-}
-
 const CoreMap = memo(function CoreMap({ f }: { f: PulseFrame }) {
   const [mode, setMode] = useState<"util" | "temp">("util");
-  const [box, setBox] = useState({ w: 0, rem: 16, dpr: 1 });
-  const [tip, setTip] = useState<number | null>(null);
-  const theme = useSyncExternalStore(subscribeTheme, getTheme, getServerTheme);
-  const canvas = useRef<HTMLCanvasElement>(null);
-  const palette = useRef<Palette | null>(null);
-  const cores = f.cpu.cores;
-  const n = cores.length;
-  const cols = Math.max(1, Math.min(16, Math.ceil(Math.sqrt(n))));
-  const rows = Math.max(1, Math.ceil(n / cols));
+  const n = f.cpu.cores.length;
+  const cols = Math.min(16, Math.ceil(Math.sqrt(n)));
   const hasTemps = !!f.cpu.temps?.some((t) => t > 0);
-  const avgMHz = f.cpu.mhz?.length
-    ? Math.round(f.cpu.mhz.reduce((a, b) => a + b, 0) / f.cpu.mhz.length)
-    : 0;
+  const avgMHz = f.cpu.mhz?.length ? Math.round(f.cpu.mhz.reduce((a, b) => a + b, 0) / f.cpu.mhz.length) : 0;
   const hottest = Math.max(f.cpu.pkg ?? 0, ...(f.cpu.temps ?? [0]));
-  const { gap, cell, h } = cellGeometry(box.w, box.rem, cols, rows);
-
-  // size: width from layout (rem and devicePixelRatio with it: the TV root size follows the viewport)
-  useEffect(() => {
-    const el = canvas.current;
-    if (!el) return;
-    const measure = () => {
-      const w = el.getBoundingClientRect().width;
-      const rem =
-        parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
-      const dpr = window.devicePixelRatio || 1;
-      setBox((b) =>
-        b.w === w && b.rem === rem && b.dpr === dpr ? b : { w, rem, dpr },
-      );
-    };
-    if (typeof ResizeObserver === "undefined") {
-      const raf = requestAnimationFrame(measure);
-      window.addEventListener("resize", measure);
-      return () => {
-        cancelAnimationFrame(raf);
-        window.removeEventListener("resize", measure);
-      };
-    }
-    const ro = new ResizeObserver(measure);
-    ro.observe(el);
-    return () => ro.disconnect();
-  }, []);
-
-  // one paint per frame of data (or resize / theme / mode change): no animation loop
-  useEffect(() => {
-    const el = canvas.current;
-    const ctx = el?.getContext("2d");
-    if (!el || !ctx || !box.w) return;
-    if (palette.current?.theme !== theme)
-      palette.current = readPalette(ctx, el, theme);
-    const P = palette.current;
-    const { gap, cell, h } = cellGeometry(box.w, box.rem, cols, rows);
-    const W = Math.round(box.w * box.dpr);
-    const H = Math.round(h * box.dpr);
-    if (el.width !== W || el.height !== H) {
-      el.width = W;
-      el.height = H;
-    }
-    ctx.setTransform(box.dpr, 0, 0, box.dpr, 0, 0);
-    ctx.clearRect(0, 0, box.w, h);
-    // 0.6875rem like the rest of the small print, shrunk only when "100" wouldn't fit the cell
-    const fontPx = Math.min(0.6875 * box.rem, (cell - 2) / 1.85);
-    ctx.font = `${fontPx}px ${P.font}`;
-    ctx.textAlign = "center";
-    ctx.textBaseline = "middle";
-    const radius = Math.min(4, cell / 4);
-    cores.forEach((p, i) => {
-      const t = f.cpu.temps?.[i] ?? 0;
-      const heat = mode === "util" ? utilHeat(p) : tempHeat(t);
-      const bg = blend(P.surface, P[heat.k], heat.a);
-      const x = (i % cols) * (cell + gap);
-      const y = Math.floor(i / cols) * (cell + gap);
-      ctx.fillStyle = css(bg);
-      ctx.beginPath();
-      if ("roundRect" in ctx) ctx.roundRect(x, y, cell, cell, radius);
-      else (ctx as CanvasRenderingContext2D).rect(x, y, cell, cell);
-      ctx.fill();
-      if (fontPx < 6) return;
-      ctx.fillStyle = css(textOn(bg, P)); // >= 4.5:1 on this exact cell color
-      ctx.fillText(
-        mode === "util" ? String(p) : t ? String(t) : "–",
-        x + cell / 2,
-        y + cell / 2 + 0.5,
-      );
-    });
-  }, [f, cores, mode, box, theme, cols, rows]);
-
-  const cellAt = (e: {
-    clientX: number;
-    clientY: number;
-    currentTarget: Element;
-  }) => {
-    const r = e.currentTarget.getBoundingClientRect();
-    const c = Math.floor((e.clientX - r.left) / (cell + gap));
-    const row = Math.floor((e.clientY - r.top) / (cell + gap));
-    const i = row * cols + c;
-    return c >= 0 && c < cols && row >= 0 && i < n ? i : null;
-  };
-
-  let busiest = 0;
-  let hot = 0;
-  cores.forEach((p, i) => {
-    if (p > (cores[busiest] ?? 0)) busiest = i;
-    if ((f.cpu.temps?.[i] ?? 0) > (f.cpu.temps?.[hot] ?? 0)) hot = i;
-  });
-  const avg = n ? Math.round(cores.reduce((a, b) => a + b, 0) / n) : 0;
-  const summary =
-    mode === "temp" && hasTemps
-      ? `${n} cores: hottest core ${hot} at ${f.cpu.temps?.[hot] ?? 0}°C`
-      : `${n} cores: average ${avg}%, busiest core ${busiest} at ${cores[busiest] ?? 0}%`;
-
-  const shown = tip !== null && tip < n && box.w > 0 ? tip : null;
-  const tipT = shown === null ? 0 : (f.cpu.temps?.[shown] ?? 0);
-  const tipMHz = shown === null ? 0 : (f.cpu.mhz?.[shown] ?? 0);
-
   return (
-    <section
-      className="rounded-xl border border-line bg-surface p-4"
-      aria-label="CPU cores"
-    >
+    <section className="rounded-xl border border-line bg-surface p-4" aria-label="CPU cores">
       <header className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
           <h2 className="font-medium">CPU cores</h2>
@@ -770,15 +380,12 @@ const CoreMap = memo(function CoreMap({ f }: { f: PulseFrame }) {
           </p>
         </div>
         {hasTemps && (
-          <div
-            role="group"
-            aria-label="Show"
-            className="flex rounded-lg border border-line p-0.5 text-xs"
-          >
+          <div role="tablist" aria-label="Show" className="flex rounded-lg border border-line p-0.5 text-xs">
             {(["util", "temp"] as const).map((m) => (
               <button
                 key={m}
-                aria-pressed={mode === m}
+                role="tab"
+                aria-selected={mode === m}
                 onClick={() => setMode(m)}
                 className={`rounded-md px-2.5 py-1 ${mode === m ? "bg-signal text-on-signal" : "text-muted hover:text-ink"}`}
               >
@@ -788,45 +395,25 @@ const CoreMap = memo(function CoreMap({ f }: { f: PulseFrame }) {
           </div>
         )}
       </header>
-      {/* cells cap at ~4rem so a 4-core VM doesn't get giant tiles; 64 threads fill the card */}
-      <div className="relative" style={{ maxWidth: `${cols * 4}rem` }}>
-        <canvas
-          ref={canvas}
-          role="img"
-          aria-label={summary}
-          className="block w-full touch-manipulation font-mono"
-          // aspect-ratio until the first measure, then the exact height of square cells
-          style={{
-            aspectRatio: `${cols} / ${rows}`,
-            height: box.w ? h : undefined,
-          }}
-          onPointerMove={(e) => {
-            if (e.pointerType === "touch") return;
-            const i = cellAt(e);
-            if (i !== tip) setTip(i);
-          }}
-          onPointerDown={(e) => {
-            if (e.pointerType !== "touch") return;
-            const i = cellAt(e);
-            setTip(i === tip ? null : i); // tap shows, tap again hides
-          }}
-          onPointerLeave={(e) => e.pointerType !== "touch" && setTip(null)}
-        />
-        {shown !== null && (
-          <div
-            aria-hidden
-            className="pointer-events-none absolute z-10 whitespace-nowrap rounded-md bg-ink px-2 py-1 text-xs text-paper shadow-lg tabular-nums"
-            style={{
-              left: (shown % cols) * (cell + gap) + cell / 2,
-              top: Math.floor(shown / cols) * (cell + gap) - 4,
-              // slides from left-anchored (first column) to right-anchored (last): never past the card
-              transform: `translate(-${cols > 1 ? ((shown % cols) / (cols - 1)) * 100 : 50}%, -100%)`,
-            }}
-          >
-            CPU {shown}: {cores[shown]}%{tipT ? ` · ${tipT}°C` : ""}
-            {tipMHz ? ` · ${tipMHz} MHz` : ""}
-          </div>
-        )}
+      {/* cells cap at ~64 px so a 4-core VM doesn't get giant tiles; 64 threads fill the card */}
+      <div className="grid gap-1" style={{ gridTemplateColumns: `repeat(${cols}, minmax(0, 1fr))`, maxWidth: cols * 64 }}>
+        {f.cpu.cores.map((p, i) => {
+          const t = f.cpu.temps?.[i] ?? 0;
+          const v = mode === "util" ? p : t;
+          const bg = mode === "util" ? utilColor(p) : tempColor(t);
+          const strong = mode === "util" ? p >= 55 : t >= 70;
+          return (
+            <div
+              key={i}
+              title={`CPU ${i}: ${p}%${t ? ` · ${t}°C` : ""}${f.cpu.mhz?.[i] ? ` · ${f.cpu.mhz[i]} MHz` : ""}`}
+              className={`relative grid aspect-square place-items-center overflow-hidden rounded-[4px] font-mono text-[10px] tabular-nums sm:text-[11px] ${strong ? "text-on-signal" : "text-ink"}`}
+            >
+              <span aria-hidden className="absolute inset-0" style={{ background: bg.c, opacity: bg.a }} />
+              {/* opacity, not text-ink/80: older engines' fallback for /80 is the light-theme color */}
+              <span className={`relative ${strong ? "" : "opacity-80"}`}>{mode === "util" ? v : v || "–"}</span>
+            </div>
+          );
+        })}
       </div>
       <p className="mt-3 flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted">
         {mode === "util" ? (
@@ -837,9 +424,7 @@ const CoreMap = memo(function CoreMap({ f }: { f: PulseFrame }) {
           </>
         ) : (
           <>
-            <span>
-              Each pair of threads shares its physical core&apos;s sensor.
-            </span>
+            <span>Each pair of threads shares its physical core&apos;s sensor.</span>
             <span className="text-warn">≥ 70°C warm</span>
             <span className="text-crit">≥ 85°C hot</span>
           </>
@@ -849,37 +434,12 @@ const CoreMap = memo(function CoreMap({ f }: { f: PulseFrame }) {
   );
 });
 
-function Bar({
-  parts,
-  label,
-}: {
-  parts: {
-    pct: number;
-    color: string;
-    name: string;
-    alpha?: number;
-    cls?: string;
-  }[];
-  label: string;
-}) {
+function Bar({ parts, label }: { parts: { pct: number; color: string; name: string; alpha?: number }[]; label: string }) {
   return (
     // contain: the width animation re-lays out only this 12 px track, not the whole page grid
-    <div
-      className="flex h-3 overflow-hidden rounded-full bg-paper [contain:layout_paint]"
-      role="img"
-      aria-label={label}
-    >
+    <div className="flex h-3 overflow-hidden rounded-full bg-paper [contain:layout_paint]" role="img" aria-label={label}>
       {parts.map((p) => (
-        <span
-          key={p.name}
-          title={`${p.name}: ${p.pct.toFixed(0)}%`}
-          style={{
-            width: `${Math.max(0, Math.min(100, p.pct))}%`,
-            background: p.color,
-            opacity: p.alpha ?? 1,
-          }}
-          className={`transition-[width] duration-300 ${p.cls ?? ""}`}
-        />
+        <span key={p.name} title={`${p.name}: ${p.pct.toFixed(0)}%`} style={{ width: `${Math.max(0, Math.min(100, p.pct))}%`, background: p.color, opacity: p.alpha ?? 1 }} className="transition-[width] duration-300" />
       ))}
     </div>
   );
@@ -888,52 +448,27 @@ function Bar({
 const MemoryCard = memo(function MemoryCard({ f }: { f: PulseFrame }) {
   const m = f.mem;
   const used = m.total ? (m.used / m.total) * 100 : 0;
-  const cached = m.total
-    ? (Math.min(m.cached, m.total - m.used) / m.total) * 100
-    : 0;
+  const cached = m.total ? (Math.min(m.cached, m.total - m.used) / m.total) * 100 : 0;
   const swap = m.swapTotal ? (m.swapUsed / m.swapTotal) * 100 : 0;
-  const usedColor = used >= 85 ? "var(--color-warn)" : "var(--color-signal)";
-  // the key for the bar: the same color (and opacity) as its segment
-  const swatch = (background: string, opacity = 1) => (
-    <span
-      aria-hidden
-      className="mr-1.5 inline-block size-2.5 rounded-sm align-[-0.0625rem]"
-      style={{ background, opacity }}
-    />
-  );
   return (
-    <section
-      className="rounded-xl border border-line bg-surface p-4"
-      aria-label="Memory"
-    >
+    <section className="rounded-xl border border-line bg-surface p-4" aria-label="Memory">
       <h2 className="mb-3 font-medium">Memory</h2>
       <Bar
         label={`Memory: ${used.toFixed(0)}% used`}
         parts={[
-          { name: "Used", pct: used, color: usedColor },
-          {
-            name: "Cache (freeable)",
-            pct: cached,
-            color: "var(--color-signal)",
-            alpha: 0.5,
-            cls: cached > 0 ? "border-l-2 border-surface" : "",
-          },
+          { name: "Used", pct: used, color: used >= 85 ? "var(--color-warn)" : "var(--color-signal)" },
+          { name: "Cache (freeable)", pct: cached, color: "var(--color-signal)", alpha: 0.35 },
         ]}
       />
       <dl className="mt-3 grid grid-cols-2 gap-x-4 gap-y-1 text-sm sm:grid-cols-4">
-        {(
-          [
-            ["Used", size(m.used), swatch(usedColor)],
-            ["Available", size(m.avail), null],
-            ["Cache", size(m.cached), swatch("var(--color-signal)", 0.5)],
-            ["Total", size(m.total), null],
-          ] as const
-        ).map(([k, v, key]) => (
+        {[
+          ["Used", size(m.used)],
+          ["Available", size(m.avail)],
+          ["Cache", size(m.cached)],
+          ["Total", size(m.total)],
+        ].map(([k, v]) => (
           <div key={k}>
-            <dt className="text-xs text-muted">
-              {key}
-              {k}
-            </dt>
+            <dt className="text-xs text-muted">{k}</dt>
             <dd className="font-medium tabular-nums">{v}</dd>
           </div>
         ))}
@@ -946,17 +481,7 @@ const MemoryCard = memo(function MemoryCard({ f }: { f: PulseFrame }) {
               {size(m.swapUsed)} of {size(m.swapTotal)}
             </span>
           </div>
-          <Bar
-            label={`Swap: ${swap.toFixed(0)}% used`}
-            parts={[
-              {
-                name: "Swap used",
-                pct: swap,
-                color:
-                  swap >= 50 ? "var(--color-warn)" : "var(--color-signal-2)",
-              },
-            ]}
-          />
+          <Bar label={`Swap: ${swap.toFixed(0)}% used`} parts={[{ name: "Swap used", pct: swap, color: swap >= 50 ? "var(--color-warn)" : "var(--color-signal-2)" }]} />
         </div>
       )}
     </section>
@@ -972,34 +497,21 @@ const NET_SERIES = [
 function NetCard({ f, hist }: { f: PulseFrame; hist: Point[] }) {
   const series = NET_SERIES;
   return (
-    <section
-      className="rounded-xl border border-line bg-surface p-4"
-      aria-label="Network"
-    >
+    <section className="rounded-xl border border-line bg-surface p-4" aria-label="Network">
       <header className="mb-2 flex items-baseline justify-between">
         <h2 className="font-medium">Network</h2>
         <span className="text-xs text-muted">last 5 min</span>
       </header>
-      <LiveChart
-        points={hist}
-        series={series}
-        windowSec={HISTORY}
-        height={140}
-      />
+      <LiveChart points={hist} series={series} windowSec={HISTORY} height={140} />
       <Legend series={series} />
       <ul className="mt-3 space-y-1.5 text-sm">
         {f.net.map((n) => (
-          <li
-            key={n.name}
-            className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-baseline gap-x-3 tabular-nums"
-          >
+          <li key={n.name} className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-baseline gap-x-3 tabular-nums">
             <span className="truncate font-medium" title={n.name}>
               {n.name}
             </span>
             <span className="whitespace-nowrap text-muted">↓ {mbit(n.in)}</span>
-            <span className="whitespace-nowrap text-muted">
-              ↑ {mbit(n.out)}
-            </span>
+            <span className="whitespace-nowrap text-muted">↑ {mbit(n.out)}</span>
             <span className="col-span-3 text-xs text-muted">
               total {size(n.rxT)} received · {size(n.txT)} sent
             </span>
@@ -1013,10 +525,7 @@ function NetCard({ f, hist }: { f: PulseFrame; hist: Point[] }) {
 const DisksCard = memo(function DisksCard({ f }: { f: PulseFrame }) {
   const disks = f.disks ?? [];
   return (
-    <section
-      className="rounded-xl border border-line bg-surface p-4"
-      aria-label="Disks"
-    >
+    <section className="rounded-xl border border-line bg-surface p-4" aria-label="Disks">
       <h2 className="mb-3 font-medium">Disks</h2>
       <ul className="grid gap-4 md:grid-cols-2 2xl:grid-cols-3">
         {disks.map((d) => {
@@ -1025,34 +534,15 @@ const DisksCard = memo(function DisksCard({ f }: { f: PulseFrame }) {
           return (
             <li key={d.dev + d.path} className="min-w-0">
               <div className="mb-1 flex flex-wrap items-baseline justify-between gap-x-2">
-                <span
-                  className="min-w-0 max-w-full truncate font-medium"
-                  title={`${d.path} (${d.dev}, ${d.fs})`}
-                >
+                <span className="min-w-0 max-w-full truncate font-medium" title={`${d.path} (${d.dev}, ${d.fs})`}>
                   {d.path}
                 </span>
-                <span
-                  className={`ml-auto shrink-0 whitespace-nowrap text-xs tabular-nums ${lv === "ok" ? "text-muted" : LEVEL_CLASS[lv]}`}
-                >
+                <span className={`ml-auto shrink-0 whitespace-nowrap text-xs tabular-nums ${lv === "ok" ? "text-muted" : LEVEL_CLASS[lv]}`}>
                   {lv !== "ok" && "⚠ "}
                   {pct.toFixed(0)}% · {size(d.avail)} free of {size(d.size)}
                 </span>
               </div>
-              <Bar
-                label={`${d.path}: ${pct.toFixed(0)}% used`}
-                parts={[
-                  {
-                    name: "Used",
-                    pct,
-                    color:
-                      lv === "crit"
-                        ? "var(--color-crit)"
-                        : lv === "warn"
-                          ? "var(--color-warn)"
-                          : "var(--color-signal)",
-                  },
-                ]}
-              />
+              <Bar label={`${d.path}: ${pct.toFixed(0)}% used`} parts={[{ name: "Used", pct, color: lv === "crit" ? "var(--color-crit)" : lv === "warn" ? "var(--color-warn)" : "var(--color-signal)" }]} />
             </li>
           );
         })}
@@ -1061,8 +551,7 @@ const DisksCard = memo(function DisksCard({ f }: { f: PulseFrame }) {
         <p className="mt-4 flex flex-wrap gap-x-5 gap-y-1 text-xs text-muted tabular-nums">
           {f.io.map((d) => (
             <span key={d.dev}>
-              <span className="font-medium text-ink">{d.dev}</span> read{" "}
-              {rate(d.r)} · write {rate(d.w)}
+              <span className="font-medium text-ink">{d.dev}</span> read {rate(d.r)} · write {rate(d.w)}
             </span>
           ))}
         </p>
@@ -1095,14 +584,8 @@ function CpuCell({ cpu, scale }: { cpu: number; scale: number }) {
   return (
     <td className="whitespace-nowrap py-1.5 pr-3 text-right">
       <span className="inline-flex items-center justify-end gap-2">
-        <span
-          className="hidden h-1.5 w-16 overflow-hidden rounded-full bg-paper sm:inline-block"
-          aria-hidden
-        >
-          <span
-            className="block h-full bg-signal"
-            style={{ width: `${Math.min(100, cpu / scale)}%` }}
-          />
+        <span className="hidden h-1.5 w-16 overflow-hidden rounded-full bg-paper sm:inline-block" aria-hidden>
+          <span className="block h-full bg-signal" style={{ width: `${Math.min(100, cpu / scale)}%` }} />
         </span>
         {cpu >= 10 ? Math.round(cpu) : cpu.toFixed(1)}%
       </span>
@@ -1111,65 +594,29 @@ function CpuCell({ cpu, scale }: { cpu: number; scale: number }) {
 }
 
 /** One process: what it runs, who runs it, since when, and anything unusual about its state. */
-function ProcCells({
-  p,
-  now,
-  indent,
-}: {
-  p: ProcRow;
-  now: number;
-  indent?: boolean;
-}) {
+function ProcCells({ p, now, indent }: { p: ProcRow; now: number; indent?: boolean }) {
   const st = p.st ? STATE[p.st] : undefined;
   return (
     <>
       <td className={`w-full max-w-0 py-1.5 pr-3 ${indent ? "pl-6" : ""}`}>
         <span className="block truncate" title={p.cmd ?? p.file ?? p.name}>
           {indent ? <span className="text-muted">{p.name}</span> : null}
-          {p.file ? (
-            <span
-              className={indent ? "ml-1.5 font-medium" : "ml-1.5 text-muted"}
-            >
-              {p.file}
-            </span>
-          ) : null}
+          {p.file ? <span className={indent ? "ml-1.5 font-medium" : "ml-1.5 text-muted"}>{p.file}</span> : null}
           {st && <span className={`ml-1.5 text-xs ${st.cls}`}>{st.label}</span>}
         </span>
-        {p.cmd && (
-          <span className="block truncate font-mono text-[0.6875rem] text-muted">
-            {p.cmd}
-          </span>
-        )}
+        {p.cmd && <span className="block truncate font-mono text-[11px] text-muted">{p.cmd}</span>}
       </td>
-      <td className="hidden whitespace-nowrap py-1.5 pr-3 text-muted sm:table-cell">
-        {p.pid}
-      </td>
-      <td className="hidden max-w-[8rem] truncate py-1.5 pr-3 text-muted sm:table-cell">
-        {p.user}
-      </td>
+      <td className="whitespace-nowrap py-1.5 pr-3 text-muted">{p.pid}</td>
+      <td className="max-w-[8rem] truncate py-1.5 pr-3 text-muted">{p.user}</td>
       <CpuCell cpu={p.cpu} scale={1} />
-      <td className="whitespace-nowrap py-1.5 pr-3 text-right">
-        {size(p.mem)}
-      </td>
-      <td className="hidden py-1.5 pr-3 text-right text-muted sm:table-cell">
-        {p.thr}
-      </td>
-      <td className="hidden py-1.5 text-right text-muted md:table-cell">
-        {age(p.born, now)}
-      </td>
+      <td className="whitespace-nowrap py-1.5 pr-3 text-right">{size(p.mem)}</td>
+      <td className="hidden py-1.5 pr-3 text-right text-muted sm:table-cell">{p.thr}</td>
+      <td className="hidden py-1.5 text-right text-muted md:table-cell">{age(p.born, now)}</td>
     </>
   );
 }
 
-function Processes({
-  procs,
-  cores,
-  now,
-}: {
-  procs: PulseFrame["procs"];
-  cores: number;
-  now: number;
-}) {
+function Processes({ procs, cores, now }: { procs: PulseFrame["procs"]; cores: number; now: number }) {
   const [tab, setTab] = useState<"top" | "groups">("top");
   const [sort, setSort] = useState<"cpu" | "mem">("cpu");
   const [q, setQ] = useState("");
@@ -1187,98 +634,50 @@ function Processes({
     if (!procs) return [];
     const needle = q.trim().toLowerCase();
     const hit = (p: ProcRow) =>
-      p.name.toLowerCase().includes(needle) ||
-      p.user.toLowerCase().includes(needle) ||
-      (p.file ?? "").toLowerCase().includes(needle) ||
-      String(p.pid) === needle;
+      p.name.toLowerCase().includes(needle) || p.user.toLowerCase().includes(needle) || (p.file ?? "").toLowerCase().includes(needle) || String(p.pid) === needle;
     const list =
       tab === "top"
-        ? procs.top
-            .filter((p) => !needle || hit(p))
-            .map((p) => ({
-              key: procKey(p),
-              cpu: p.cpu,
-              mem: p.mem,
-              proc: p,
-              group: undefined,
-            }))
+        ? procs.top.filter((p) => !needle || hit(p)).map((p) => ({ key: procKey(p), cpu: p.cpu, mem: p.mem, proc: p, group: undefined }))
         : procs.groups
-            .filter(
-              (g) =>
-                !needle ||
-                g.name.toLowerCase().includes(needle) ||
-                (g.ps ?? []).some(hit),
-            )
-            .map((g) => ({
-              key: `g:${g.name}`,
-              cpu: g.cpu,
-              mem: g.mem,
-              proc: undefined,
-              group: g,
-            }));
+            .filter((g) => !needle || g.name.toLowerCase().includes(needle) || (g.ps ?? []).some(hit))
+            .map((g) => ({ key: `g:${g.name}`, cpu: g.cpu, mem: g.mem, proc: undefined, group: g }));
     // the page re-sorts by memory too: the agent sends the biggest by memory as well as by CPU
     const seen = new Set<string>();
-    const sorted = list
-      .filter((r) => !seen.has(r.key) && seen.add(r.key))
-      .sort((a, b) => b[sort] - a[sort]);
+    const sorted = list.filter((r) => !seen.has(r.key) && seen.add(r.key)).sort((a, b) => b[sort] - a[sort]);
     if (!frozen) return sorted;
     const at = new Map(frozen.map((k, i) => [k, i]));
-    return sorted.sort(
-      (a, b) => (at.get(a.key) ?? 1e9) - (at.get(b.key) ?? 1e9),
-    );
+    return sorted.sort((a, b) => (at.get(a.key) ?? 1e9) - (at.get(b.key) ?? 1e9));
   }, [procs, tab, sort, q, frozen]);
 
   if (!procs) return null;
   const anyCmd = procs.top.some((p) => p.cmd);
   const groupScale = Math.max(1, cores); // a group can use every core: 157% of 8 cores is a short bar
   return (
-    <section
-      className="rounded-xl border border-line bg-surface p-4"
-      aria-label="Processes"
-    >
+    <section className="rounded-xl border border-line bg-surface p-4" aria-label="Processes">
       <header className="mb-3 flex flex-wrap items-center justify-between gap-2">
         <div>
           <h2 className="font-medium">Processes</h2>
           <p className="text-xs text-muted">
-            {procs.count.toLocaleString()} running · the busiest by CPU and by
-            memory · CPU% is of one core, like top
+            {procs.count.toLocaleString()} running · the busiest by CPU and by memory · CPU% is of one core, like top
             {procs.hidden ? " · this server hides other users' processes" : ""}
           </p>
         </div>
         <div className="flex w-full flex-wrap items-center gap-2 sm:w-auto">
-          <div
-            role="group"
-            aria-label="View"
-            className="flex rounded-lg border border-line p-0.5 text-xs"
-          >
+          <div role="group" aria-label="View" className="flex rounded-lg border border-line p-0.5 text-xs">
             {(
               [
-                ["top", "Busiest"],
+                ["top", "Top"],
                 ["groups", "By program"],
               ] as const
             ).map(([k, l]) => (
-              <button
-                key={k}
-                aria-pressed={tab === k}
-                onClick={() => setTab(k)}
-                className={`rounded-md px-2.5 py-1 ${tab === k ? "bg-signal text-on-signal" : "text-muted hover:text-ink"}`}
-              >
+              <button key={k} aria-pressed={tab === k} onClick={() => setTab(k)} className={`rounded-md px-2.5 py-1 ${tab === k ? "bg-signal text-on-signal" : "text-muted hover:text-ink"}`}>
                 {l}
               </button>
             ))}
           </div>
-          <div
-            role="group"
-            aria-label="Sort by"
-            className="flex rounded-lg border border-line p-0.5 text-xs"
-          >
+          <div role="group" aria-label="Sort by" className="flex rounded-lg border border-line p-0.5 text-xs">
             {(["cpu", "mem"] as const).map((k) => (
-              <button
-                key={k}
-                aria-pressed={sort === k}
-                onClick={() => setSort(k)}
-                className={`rounded-md px-2.5 py-1 ${sort === k ? "bg-paper font-medium text-ink" : "text-muted hover:text-ink"}`}
-              >
+              <button key={k} aria-pressed={sort === k} onClick={() => setSort(k)} className={`rounded-md px-2.5 py-1 ${sort === k ? "bg-paper font-medium text-ink" : "text-muted hover:text-ink"}`}>
                 {k === "cpu" ? "CPU" : "Memory"}
               </button>
             ))}
@@ -1289,7 +688,7 @@ function Processes({
             onChange={(e) => setQ(e.target.value)}
             placeholder="Search name, script, user, PID"
             aria-label="Search processes"
-            className="min-w-0 flex-1 rounded-lg border border-field bg-paper px-2.5 py-1 text-sm sm:w-52 sm:flex-none"
+            className="min-w-0 flex-1 rounded-lg border border-line bg-paper px-2.5 py-1 text-sm sm:w-52 sm:flex-none"
           />
         </div>
       </header>
@@ -1298,30 +697,18 @@ function Processes({
         onPointerEnter={() => setFrozen(rows.map((r) => r.key))}
         onPointerLeave={() => setFrozen(null)}
         onFocus={() => setFrozen((f) => f ?? rows.map((r) => r.key))}
-        onBlur={(e) =>
-          !e.currentTarget.contains(e.relatedTarget) && setFrozen(null)
-        }
+        onBlur={(e) => !e.currentTarget.contains(e.relatedTarget) && setFrozen(null)}
       >
-        <table className="w-full text-sm sm:min-w-[600px] tabular-nums">
+        <table className="w-full min-w-[600px] text-sm tabular-nums">
           <thead className="text-left text-xs text-muted">
             <tr className="border-b border-line">
-              <th className="w-full max-w-0 py-2 pr-3 font-medium">
-                {tab === "top" ? "Program · script" : "Program (count)"}
-              </th>
-              <th className="hidden py-2 pr-3 font-medium sm:table-cell">
-                PID
-              </th>
-              <th className="hidden py-2 pr-3 font-medium sm:table-cell">
-                User
-              </th>
+              <th className="w-full max-w-0 py-2 pr-3 font-medium">{tab === "top" ? "Program · script" : "Program (count)"}</th>
+              <th className="py-2 pr-3 font-medium">PID</th>
+              <th className="py-2 pr-3 font-medium">User</th>
               <th className="py-2 pr-3 text-right font-medium">CPU</th>
               <th className="py-2 pr-3 text-right font-medium">Memory</th>
-              <th className="hidden py-2 pr-3 text-right font-medium sm:table-cell">
-                Threads
-              </th>
-              <th className="hidden whitespace-nowrap py-2 text-right font-medium md:table-cell">
-                Running for
-              </th>
+              <th className="hidden py-2 pr-3 text-right font-medium sm:table-cell">Threads</th>
+              <th className="hidden py-2 text-right font-medium md:table-cell">Running for</th>
             </tr>
           </thead>
           <tbody>
@@ -1339,64 +726,42 @@ function Processes({
                           aria-expanded={expanded}
                           className="inline-flex items-center gap-1.5 rounded text-left hover:text-signal focus-visible:outline-2 focus-visible:outline-signal"
                         >
-                          <span
-                            aria-hidden
-                            className={`inline-block text-xs text-muted transition-transform ${expanded ? "rotate-90" : ""}`}
-                          >
+                          <span aria-hidden className={`inline-block text-xs text-muted transition-transform ${expanded ? "rotate-90" : ""}`}>
                             ▶
                           </span>
                           {g.name}
-                          <span className="text-xs font-normal text-muted">
-                            ×{g.n}
-                          </span>
-                          <span className="sr-only">
-                            {expanded
-                              ? ", hide its processes"
-                              : ", show its processes"}
-                          </span>
+                          <span className="text-xs font-normal text-muted">×{g.n}</span>
+                          <span className="sr-only">{expanded ? ", hide its processes" : ", show its processes"}</span>
                         </button>
                       </td>
-                      <td className="hidden py-1.5 pr-3 sm:table-cell" />
-                      <td className="hidden py-1.5 pr-3 sm:table-cell" />
+                      <td className="py-1.5 pr-3" />
+                      <td className="py-1.5 pr-3" />
                       <CpuCell cpu={g.cpu} scale={groupScale} />
-                      <td className="whitespace-nowrap py-1.5 pr-3 text-right">
-                        {size(g.mem)}
-                      </td>
+                      <td className="whitespace-nowrap py-1.5 pr-3 text-right">{size(g.mem)}</td>
                       <td className="hidden sm:table-cell" />
                       <td className="hidden md:table-cell" />
                     </tr>
                     {expanded &&
                       members.map((p) => (
-                        <tr
-                          key={procKey(p)}
-                          className="border-b border-line bg-paper"
-                        >
+                        <tr key={procKey(p)} className="border-b border-line/60 bg-paper/50">
                           <ProcCells p={p} now={now} indent />
                         </tr>
                       ))}
                     {expanded && members.length === 0 && (
                       // agents before 1.3.1 send only each program's totals, not its processes
-                      <tr className="border-b border-line bg-paper">
-                        <td
-                          colSpan={7}
-                          className="py-2 pl-6 pr-3 text-xs text-muted"
-                        >
-                          Your server&apos;s agent doesn&apos;t list a
-                          program&apos;s processes yet. Run the command from{" "}
+                      <tr className="border-b border-line/60 bg-paper/50">
+                        <td colSpan={7} className="py-2 pl-6 pr-3 text-xs text-muted">
+                          Your server&apos;s agent doesn&apos;t list a program&apos;s processes yet. Run the command from{" "}
                           <a className="text-signal underline" href="/connect">
                             Add server
                           </a>{" "}
-                          on your server once: it installs the latest agent and
-                          keeps your history.
+                          on your server once: it installs the latest agent and keeps your history.
                         </td>
                       </tr>
                     )}
                     {expanded && members.length > 0 && g.n > members.length && (
-                      <tr className="border-b border-line bg-paper">
-                        <td
-                          colSpan={7}
-                          className="py-1.5 pl-6 text-xs text-muted"
-                        >
+                      <tr className="border-b border-line/60 bg-paper/50">
+                        <td colSpan={7} className="py-1.5 pl-6 text-xs text-muted">
                           and {g.n - members.length} more using less CPU
                         </td>
                       </tr>
@@ -1414,48 +779,27 @@ function Processes({
                         aria-expanded={expanded}
                         className="flex max-w-full items-center gap-1.5 truncate rounded text-left hover:text-signal focus-visible:outline-2 focus-visible:outline-signal"
                       >
-                        <span
-                          aria-hidden
-                          className={`inline-block text-xs text-muted transition-transform ${expanded ? "rotate-90" : ""}`}
-                        >
+                        <span aria-hidden className={`inline-block text-xs text-muted transition-transform ${expanded ? "rotate-90" : ""}`}>
                           ▶
                         </span>
                         <span className="font-medium">{p.name}</span>
-                        {p.file && (
-                          <span className="truncate text-muted">{p.file}</span>
-                        )}
-                        {p.st && STATE[p.st] && (
-                          <span className={`text-xs ${STATE[p.st]!.cls}`}>
-                            {STATE[p.st]!.label}
-                          </span>
-                        )}
+                        {p.file && <span className="truncate text-muted">{p.file}</span>}
+                        {p.st && STATE[p.st] && <span className={`text-xs ${STATE[p.st]!.cls}`}>{STATE[p.st]!.label}</span>}
                       </button>
                     </td>
-                    <td className="hidden whitespace-nowrap py-1.5 pr-3 text-muted sm:table-cell">
-                      {p.pid}
-                    </td>
-                    <td className="hidden max-w-[8rem] truncate py-1.5 pr-3 text-muted sm:table-cell">
-                      {p.user}
-                    </td>
+                    <td className="whitespace-nowrap py-1.5 pr-3 text-muted">{p.pid}</td>
+                    <td className="max-w-[8rem] truncate py-1.5 pr-3 text-muted">{p.user}</td>
                     <CpuCell cpu={p.cpu} scale={1} />
-                    <td className="whitespace-nowrap py-1.5 pr-3 text-right">
-                      {size(p.mem)}
-                    </td>
-                    <td className="hidden py-1.5 pr-3 text-right text-muted sm:table-cell">
-                      {p.thr}
-                    </td>
-                    <td className="hidden py-1.5 text-right text-muted md:table-cell">
-                      {age(p.born, now)}
-                    </td>
+                    <td className="whitespace-nowrap py-1.5 pr-3 text-right">{size(p.mem)}</td>
+                    <td className="hidden py-1.5 pr-3 text-right text-muted sm:table-cell">{p.thr}</td>
+                    <td className="hidden py-1.5 text-right text-muted md:table-cell">{age(p.born, now)}</td>
                   </tr>
                   {expanded && (
-                    <tr className="border-b border-line bg-paper">
+                    <tr className="border-b border-line/60 bg-paper/50">
                       <td colSpan={7} className="px-6 py-2 text-xs">
                         <dl className="grid grid-cols-[max-content_minmax(0,1fr)] gap-x-4 gap-y-1">
                           <dt className="text-muted">Runs</dt>
-                          <dd className="break-all">
-                            {p.file ? `${p.name} ${p.file}` : p.name}
-                          </dd>
+                          <dd className="break-all">{p.file ? `${p.name} ${p.file}` : p.name}</dd>
                           {p.cmd && (
                             <>
                               <dt className="text-muted">Command</dt>
@@ -1463,18 +807,9 @@ function Processes({
                             </>
                           )}
                           <dt className="text-muted">Started</dt>
-                          <dd>
-                            {p.born
-                              ? `${new Date(p.born * 1000).toLocaleString()} (${age(p.born, now)} ago)`
-                              : "unknown"}
-                          </dd>
+                          <dd>{p.born ? `${new Date(p.born * 1000).toLocaleString()} (${age(p.born, now)} ago)` : "unknown"}</dd>
                           <dt className="text-muted">State</dt>
-                          <dd>
-                            {p.st
-                              ? (STATE[p.st]?.label ??
-                                (p.st === "R" ? "running" : "sleeping"))
-                              : "unknown"}
-                          </dd>
+                          <dd>{p.st ? (STATE[p.st]?.label ?? (p.st === "R" ? "running" : "sleeping")) : "unknown"}</dd>
                           <dt className="text-muted">Threads</dt>
                           <dd>{p.thr}</dd>
                         </dl>
@@ -1487,9 +822,7 @@ function Processes({
             {!rows.length && (
               <tr>
                 <td colSpan={7} className="py-6 text-center text-muted">
-                  {q
-                    ? `No busy process matches “${q}”. Only the busiest processes are listed.`
-                    : "No processes to show."}
+                  {q ? `No process matches “${q}”.` : "No processes to show."}
                 </td>
               </tr>
             )}
@@ -1497,9 +830,7 @@ function Processes({
         </table>
       </div>
       <p className="mt-2 text-xs text-muted">
-        {tab === "groups"
-          ? "Open a program to see its processes. "
-          : "Open a process for its details. "}
+        {tab === "groups" ? "Open a program to see its processes. " : "Open a process for its details. "}
         The list holds still while your pointer or keyboard is in it.{" "}
         {anyCmd
           ? "Command lines are shown with passwords and tokens removed."

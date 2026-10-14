@@ -5,30 +5,21 @@
 
 @theme {
   --font-sans: var(--font-plex), ui-sans-serif, system-ui, sans-serif;
-  --font-cond:
-    var(--font-plex-cond), var(--font-plex), ui-sans-serif, sans-serif;
+  --font-cond: var(--font-plex-cond), var(--font-plex), ui-sans-serif, sans-serif;
   --font-mono: ui-monospace, "Cascadia Code", Menlo, monospace;
 
   --color-paper: #eef2f6;
   --color-surface: #ffffff;
   --color-ink: #13202f;
   --color-muted: #566578;
-  --color-line: #c3ccd8;
+  --color-line: #d5dde7;
   --color-signal: #2457d6;
   --color-on-signal: #ffffff;
-  --color-signal-2: #0a7a6f;
-  --color-signal-3: #8b3fc9;
+  --color-signal-2: #0f8a7e;
+  --color-signal-3: #9a5d00;
   --color-ok: #1d7a46;
   --color-warn: #9a5d00;
   --color-crit: #c2362b;
-  /* solid tints instead of Tailwind's `/NN` opacity modifiers: those compile to color-mix(), which older
-     TV browsers drop entirely (the element then loses its border or background) */
-  --color-warn-line: #d9b98a;
-  --color-crit-line: #e3a9a4;
-  --color-select: #dbe5fb;
-  /* form-control borders: >= 3:1 on the card (WCAG 1.4.11) */
-  --color-field: #8390a1;
-  --color-code: #0f1b2d;
   /* logo trace: deep gold on light backgrounds */
   --gold-base: rgba(176, 128, 20, 0.35);
   --gold-1: #b07d0f;
@@ -41,19 +32,14 @@
   --color-surface: #15233a;
   --color-ink: #e3eaf3;
   --color-muted: #97a8bd;
-  --color-line: #3a4d6b;
+  --color-line: #26364f;
   --color-signal: #7aa2ff;
   --color-on-signal: #0e1828;
   --color-signal-2: #4fc7b8;
-  --color-signal-3: #c49bff;
+  --color-signal-3: #f0b44c;
   --color-ok: #5fcf8f;
   --color-warn: #f0b44c;
   --color-crit: #ff7b6e;
-  --color-warn-line: #7a6234;
-  --color-crit-line: #7d3f3c;
-  --color-select: #24386a;
-  --color-field: #5a6f90;
-  --color-code: #0a1220;
   /* logo trace: brighter gold on dark backgrounds */
   --gold-base: rgba(240, 199, 94, 0.28);
   --gold-1: #c9971d;
@@ -73,15 +59,10 @@
   --color-signal: #8fb4ff;
   --color-on-signal: #000000;
   --color-signal-2: #5fe0cf;
-  --color-signal-3: #d2b0ff;
+  --color-signal-3: #ffc95c;
   --color-ok: #6ee7a0;
   --color-warn: #ffc95c;
   --color-crit: #ff8f86;
-  --color-warn-line: #806426;
-  --color-crit-line: #80443f;
-  --color-select: #1c2c52;
-  --color-field: #5b6576;
-  --color-code: #05070a;
   --gold-base: rgba(255, 213, 110, 0.3);
   --gold-1: #d9a521;
   --gold-2: #ffd36b;
@@ -96,14 +77,6 @@
 
 html {
   -webkit-text-size-adjust: 100%;
-  /* keyboard focus never lands under the sticky header or the fixed toasts at the bottom */
-  scroll-padding-top: 7rem;
-  scroll-padding-bottom: 6rem;
-}
-@media (min-width: 64rem) {
-  html {
-    scroll-padding-top: 4.5rem;
-  }
 }
 
 body {
@@ -142,12 +115,10 @@ body {
   }
 }
 
-/* in the base layer, so a component's own outline / rounded-* utilities win over it */
-@layer base {
-  :focus-visible {
-    outline: 2px solid var(--color-signal);
-    outline-offset: 2px;
-  }
+:focus-visible {
+  outline: 2px solid var(--color-signal);
+  outline-offset: 2px;
+  border-radius: 4px;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -157,16 +128,21 @@ body {
   }
 }
 
+/* Recharts: keep axis text in the UI palette */
+.recharts-cartesian-axis-tick-value {
+  fill: var(--color-muted);
+  font-size: 11px;
+}
+.recharts-cartesian-grid line {
+  stroke: var(--color-line);
+}
+
 /* hide scrollbars on the phone nav strip, it still scrolls */
 .no-scrollbar {
   scrollbar-width: none;
 }
 .no-scrollbar::-webkit-scrollbar {
   display: none;
-}
-
-[data-switching] * {
-  transition: none !important;
 }
 
 /* theme switch: a short cross-fade of one composited snapshot (see theme-toggle.tsx) */
@@ -211,11 +187,7 @@ body {
     var(--gold-2) 352deg,
     transparent 360deg
   );
-  /* three laps (about 13 s) after each page load, then it rests as a gold outline: a light that runs
-     forever kept the GPU busy on every page (measured ~1/3 of a GPU core on a TV). Hover/focus runs it again. */
-  animation:
-    logo-trace var(--trace-speed) linear 3,
-    logo-rest 0.8s ease-out calc(var(--trace-speed) * 3 - 0.8s) forwards;
+  animation: logo-trace var(--trace-speed) linear infinite;
   will-change: transform;
 }
 .logo-ring > .logo-inner {
@@ -231,21 +203,10 @@ body {
   }
 }
 /* interactive: faster trace, warm glow, the pulse line re-draws itself */
-.logo-ring:hover::before,
-.logo-ring:focus-visible::before {
-  animation: logo-trace var(--trace-speed) linear infinite;
-}
-@keyframes logo-rest {
-  to {
-    opacity: 0;
-  }
-}
 .logo-ring:hover,
 .logo-ring:focus-visible {
   --trace-speed: 1.6s;
-  box-shadow:
-    0 0 0 3px var(--gold-base),
-    0 0 18px var(--gold-base);
+  box-shadow: 0 0 0 3px var(--gold-base), 0 0 18px var(--gold-base);
 }
 .logo-ring:active {
   transform: scale(0.97);

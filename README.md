@@ -27,7 +27,7 @@ one command on the server · live logs and failure history · a Next.js dashboar
 - [Free-tier budget](#-free-tier-budget)
 - [Project structure](#-project-structure)
 - [Quick start](#-quick-start)
-- [Part 1 — Server agent (Ubuntu)](#-part-1--server-agent-ubuntu)
+- [Part 1 — Server kit (Ubuntu)](#-part-1--server-kit-ubuntu)
 - [Part 2 — Dashboard (Vercel)](#-part-2--dashboard-vercel)
 - [Local development](#-local-development)
 - [Configuration reference](#-configuration-reference)
@@ -47,10 +47,10 @@ one command on the server · live logs and failure history · a Next.js dashboar
 
 Server Pulse has two parts that only talk over one HTTPS link:
 
-| Part           | Runs on             | What you get                                                                                                                                                                                                          |
-| -------------- | ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Part | Runs on | What you get |
+| --- | --- | --- |
 | **Server kit** | Your Ubuntu machine | btop live in the browser, Netdata metrics every second with a 30-day local store, one login via Caddy, a free tunnel (Tailscale Funnel or ngrok), real-time Telegram/email alerts, and a 30-day usage report by email |
-| **Dashboard**  | Vercel (free)       | Live KPI cards and charts, history from 1 hour to 1 year, monthly reports, CSV export, owner + viewer passwords, installable as a phone app                                                                           |
+| **Dashboard** | Vercel (free) | Live KPI cards and charts, history from 1 hour to 1 year, monthly reports, CSV export, owner + viewer passwords, installable as a phone app |
 
 **Highlights**
 
@@ -70,10 +70,10 @@ Server Pulse has two parts that only talk over one HTTPS link:
 - 🧭 **Honest history**: charts cover the range you pick, shade the time before monitoring started, and break at gaps with the reason (server off, agent stopped, filling from server). Every chart shows its coverage; Reports mark months that weren't monitored.
 - 📈 **True peaks at any zoom**: a one-minute spike still shows as the peak on a 1-year view, because every hour keeps its peak minute.
 - 🔁 **Gaps fill themselves**: when the internet, tunnel or dashboard was down but the server kept running, the missing time is copied from the server (it keeps 30 days) on the next sync or as soon as you open the dashboard.
-- 🕰️ **Any time window, everywhere**: History, Logs and Failures share one _From … to …_ picker; open a failure to jump to the log lines or the CPU/memory/disk charts around it, and from History to the logs and failures of the same window.
+- 🕰️ **Any time window, everywhere**: History, Logs and Failures share one *From … to …* picker; open a failure to jump to the log lines or the CPU/memory/disk charts around it, and from History to the logs and failures of the same window.
 - 📜 **Live logs and failure history**: the Logs page streams the server's system log live (filter by level, service, text) and keeps every failure (crashes, out-of-memory, failed services, disk errors, CPU/RAM/disk/temperature limits, offline) for 180 days. Secrets are removed on the server before anything is sent.
 - 🎞️ **Smooth at 60 fps** — live charts scroll continuously with zero added delay; pages switch instantly.
-- 🧭 **One-command setup** — _Add server_ shows one install command; you approve the server by name and live data starts.
+- 🧭 **Built-in server setup guide** — `/setup` generates every command for your server (passwords, tunnel, alerts), checks for each step, a downloadable script and your final `SERVER_URL`.
 
 ---
 
@@ -169,45 +169,45 @@ sequenceDiagram
 
 ### Server kit (Ubuntu 22.04 / 24.04)
 
-| Layer              | Choice                                       | Why                                                                          | Alternative                |
-| ------------------ | -------------------------------------------- | ---------------------------------------------------------------------------- | -------------------------- |
-| Metrics + local DB | **Netdata**                                  | Per-second metrics with zero config, tiered on-disk database, REST API       | Prometheus + node_exporter |
-| Live terminal view | **btop** via **ttyd 1.7.7**                  | Best-looking live process view; ttyd is read-only by default                 | Glances web mode           |
-| Login + routing    | **Caddy**                                    | One basic-auth login for `/` and `/history/`, separate user for the app      | Nginx                      |
-| Public access      | **Tailscale Funnel** (default)               | Free, stable `*.ts.net` HTTPS URL, no open ports, no published request quota | ngrok free in budget mode  |
-| Supervision        | **systemd** services + timers                | Starts at boot, restarts on crash                                            | Docker Compose             |
-| Alerts             | **Netdata health alarms** → Telegram + email | Real-time, runs on the server                                                | ntfy.sh                    |
-| Monthly email      | **Python 3** standard library                | Nothing to install, any SMTP                                                 | msmtp                      |
+| Layer | Choice | Why | Alternative |
+| --- | --- | --- | --- |
+| Metrics + local DB | **Netdata** | Per-second metrics with zero config, tiered on-disk database, REST API | Prometheus + node_exporter |
+| Live terminal view | **btop** via **ttyd 1.7.7** | Best-looking live process view; ttyd is read-only by default | Glances web mode |
+| Login + routing | **Caddy** | One basic-auth login for `/` and `/history/`, separate user for the app | Nginx |
+| Public access | **Tailscale Funnel** (default) | Free, stable `*.ts.net` HTTPS URL, no open ports, no published request quota | ngrok free in budget mode |
+| Supervision | **systemd** services + timers | Starts at boot, restarts on crash | Docker Compose |
+| Alerts | **Netdata health alarms** → Telegram + email | Real-time, runs on the server | ntfy.sh |
+| Monthly email | **Python 3** standard library | Nothing to install, any SMTP | msmtp |
 
 ### Dashboard (Vercel)
 
-| Layer                 | Choice                                    | Why                                                     | Alternative             |
-| --------------------- | ----------------------------------------- | ------------------------------------------------------- | ----------------------- |
-| Framework             | **Next.js** (App Router) + **TypeScript** | Pages and API routes in one repo, first-class on Vercel | Remix, SvelteKit        |
-| UI                    | **Tailwind CSS** + **shadcn/ui**          | Fast, consistent, dark mode built in                    | Mantine                 |
-| Charts                | **Recharts**                              | Sparklines and line charts up to a few thousand points  | Apache ECharts, uPlot   |
-| Data fetching         | **TanStack Query**                        | Polling, pause on hidden tab, retries                   | SWR                     |
-| Database              | **Neon Postgres** (Vercel Marketplace)    | Free tier, one-click connect, scales to zero            | Supabase                |
-| ORM + migrations      | **Drizzle ORM** + drizzle-kit             | Typed SQL, migrations run at build                      | Prisma                  |
-| Validation            | **Zod**                                   | Validates Netdata responses and API input               | Valibot                 |
-| Auth                  | Signed httpOnly cookie (**jose**)         | Owner + viewer passwords, no user table                 | Auth.js                 |
-| Scheduling            | **Vercel Cron** (daily)                   | Free on Hobby                                           | GitHub Actions schedule |
-| Email (offline alert) | **Nodemailer** + Gmail App Password       | Free SMTP                                               | Resend free tier        |
-| PWA                   | Web manifest + service worker             | Installable on Android and iPhone                       | —                       |
-| CI/CD                 | **GitHub → Vercel** Git integration       | Every push to `main` deploys                            | Vercel CLI              |
+| Layer | Choice | Why | Alternative |
+| --- | --- | --- | --- |
+| Framework | **Next.js** (App Router) + **TypeScript** | Pages and API routes in one repo, first-class on Vercel | Remix, SvelteKit |
+| UI | **Tailwind CSS** + **shadcn/ui** | Fast, consistent, dark mode built in | Mantine |
+| Charts | **Recharts** | Sparklines and line charts up to a few thousand points | Apache ECharts, uPlot |
+| Data fetching | **TanStack Query** | Polling, pause on hidden tab, retries | SWR |
+| Database | **Neon Postgres** (Vercel Marketplace) | Free tier, one-click connect, scales to zero | Supabase |
+| ORM + migrations | **Drizzle ORM** + drizzle-kit | Typed SQL, migrations run at build | Prisma |
+| Validation | **Zod** | Validates Netdata responses and API input | Valibot |
+| Auth | Signed httpOnly cookie (**jose**) | Owner + viewer passwords, no user table | Auth.js |
+| Scheduling | **Vercel Cron** (daily) | Free on Hobby | GitHub Actions schedule |
+| Email (offline alert) | **Nodemailer** + Gmail App Password | Free SMTP | Resend free tier |
+| PWA | Web manifest + service worker | Installable on Android and iPhone | — |
+| CI/CD | **GitHub → Vercel** Git integration | Every push to `main` deploys | Vercel CLI |
 
 ---
 
 ## 💸 Free-tier budget
 
-| Service               | Free limit                                                                                     | How Server Pulse stays inside it                                                                             |
-| --------------------- | ---------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| Vercel Hobby cron     | [Once per day, ±59 min](https://vercel.com/docs/cron-jobs/usage-and-pricing)                   | Nightly job pulls 26 h from Netdata's own 30-day store                                                       |
-| Vercel functions      | Per-request time cap                                                                           | Backfill runs one chart per request; every route stays well under 60 s                                       |
-| Tailscale Funnel      | Free on the Personal plan; unpublished bandwidth limits                                        | Only small JSON passes through it                                                                            |
-| ngrok free            | [20,000 requests + 1 GB out per month](https://ngrok.com/docs/pricing-limits/free-plan-limits) | **Budget mode**: 10 s shared polling, usage meter, live view pauses at 80 % (≈ 54 h of live viewing a month) |
-| Neon free             | [100 CU-hours + 0.5 GB per project](https://neon.com/pricing), suspends after 5 min idle       | Live view never touches the DB; hourly rollup keeps a year near 100 MB                                       |
-| Telegram / Gmail SMTP | Free                                                                                           | Alerts fire only on state changes; offline email once per outage                                             |
+| Service | Free limit | How Server Pulse stays inside it |
+| --- | --- | --- |
+| Vercel Hobby cron | [Once per day, ±59 min](https://vercel.com/docs/cron-jobs/usage-and-pricing) | Nightly job pulls 26 h from Netdata's own 30-day store |
+| Vercel functions | Per-request time cap | Backfill runs one chart per request; every route stays well under 60 s |
+| Tailscale Funnel | Free on the Personal plan; unpublished bandwidth limits | Only small JSON passes through it |
+| ngrok free | [20,000 requests + 1 GB out per month](https://ngrok.com/docs/pricing-limits/free-plan-limits) | **Budget mode**: 10 s shared polling, usage meter, live view pauses at 80 % (≈ 54 h of live viewing a month) |
+| Neon free | [100 CU-hours + 0.5 GB per project](https://neon.com/pricing), suspends after 5 min idle | Live view never touches the DB; hourly rollup keeps a year near 100 MB |
+| Telegram / Gmail SMTP | Free | Alerts fire only on state changes; offline email once per outage |
 
 > **Personal use.** Vercel Hobby and Tailscale Personal are for non-commercial use. For business use, keep ngrok budget mode for the tunnel and host the app on a commercial-friendly free tier (e.g. Cloudflare Workers via OpenNext).
 
@@ -255,6 +255,7 @@ server-pulse/
 │   ├── reports.ts                # Monthly aggregates
 │   ├── sync.ts                   # Sync, backfill, rollup, offline email
 │   ├── usage.ts                  # ngrok request meter (budget mode)
+│   ├── setup-script.ts           # Builds the server-kit commands for /setup
 │   ├── mail.ts                   # Offline email (Nodemailer)
 │   ├── demo.ts                   # Deterministic demo data
 │   ├── *.test.ts                 # Unit tests (node --test)
@@ -287,38 +288,203 @@ server-pulse/
 
 Already use ngrok? Point it at `127.0.0.1:19998` (without `--basic-auth`) and add your address at the end of the command: `… ABCD-1234 https://your-name.ngrok-free.dev`.
 
-**Without a database: one owner, configured by env var**
+The options below are the classic kit (Netdata + Caddy), still supported.
 
-1. **Server**: install the agent by hand ([Part 1](#-part-1--server-agent-ubuntu)). It prints a link like `https://dashboard:PASS@pulse-myserver.tailnet-name.ts.net/history`.
-2. **Dashboard**: click **Import** on [vercel.com/new](https://vercel.com/new), add that link as `SERVER_URL`, connect Neon, deploy ([Part 2](#-part-2--dashboard-vercel)).
-3. **Open the site** and log in. The 30-day backfill starts by itself.
+**Option A: accounts (no env vars to edit)**
+
+1. Deploy to Vercel and connect Neon (Storage → Create Database → Neon), then set `SESSION_SECRET` to any long random string.
+2. Open the site → **Create account**.
+3. Run the **Server setup** guide on your Ubuntu box, then paste the link it gives you on **Connect**. Live data appears at once; 30 days of history import in the background.
+
+**Option B: one owner, configured by env var**
+
+1. **Server** — open `/setup` on your deployed dashboard (or `npm run dev` → http://localhost:3000/setup) for a guided, copy-paste version of [Part 1](#-part-1--server-kit-ubuntu), or follow Part 1 below on your Ubuntu machine. You end up with a link like `https://dashboard:PASS@my-server.tailnet-name.ts.net/history`.
+2. **Dashboard** — click **Import** on [vercel.com/new](https://vercel.com/new), add that link as `SERVER_URL`, connect Neon, deploy ([Part 2](#-part-2--dashboard-vercel)).
+3. **Open the site**, log in, and the 30-day backfill starts automatically.
 
 ---
 
-## 🖥️ Part 1 — Server agent (Ubuntu)
+## 🖥️ Part 1 — Server kit (Ubuntu)
 
-Everything on the server is one program, [`server-pulse-agent`](agent/README.md). It records the vitals every second, keeps 30 days of history, reads the system logs for failures and publishes all of it over one HTTPS address. Nothing else is installed: no Netdata, Caddy or btop. It never updates, upgrades or reboots the machine.
+> **Simplest path: the one-file agent.** [`agent/`](agent/README.md) is a single binary that collects the vitals, keeps 30 days of history and publishes them over Tailscale Funnel, with no Netdata, Caddy or tunnel install:
+>
+> ```bash
+> sudo ./server-pulse-agent-linux-amd64 install --authkey tskey-auth-…   # prints the dashboard link
+> ```
+>
+> The steps below are the classic kit (Netdata + Caddy + btop in the browser), still fully supported.
 
-**With an account (recommended):** open **Add server** in the dashboard and paste the command it shows (see [Quick start](#-quick-start)).
+Run every block as your normal sudo user. Change only values marked `CHANGE_ME`. Use passwords with letters and numbers only (they go inside a URL later).
 
-**By hand:** see [agent/README.md](agent/README.md#set-up-by-hand-about-5-minutes). In short:
+### 1.1 btop + ttyd (live terminal in the browser)
 
 ```bash
-chmod +x server-pulse-agent-linux-amd64
-sudo ./server-pulse-agent-linux-amd64 install            # prints the dashboard link
+sudo apt update && sudo apt install -y btop curl wget
+sudo wget -O /usr/local/bin/ttyd "https://github.com/tsl0922/ttyd/releases/download/1.7.7/ttyd.$(uname -m)"
+sudo chmod +x /usr/local/bin/ttyd
+
+sudo tee /etc/systemd/system/btop-web.service > /dev/null <<EOF
+[Unit]
+Description=btop live in browser (ttyd)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=$USER
+Environment=TERM=xterm-256color
+ExecStart=/usr/local/bin/ttyd -p 7681 -i lo -t titleFixed=btop-live -t fontSize=14 -t disableLeaveAlert=true btop
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target
+EOF
+
+sudo systemctl daemon-reload && sudo systemctl enable --now btop-web
 ```
 
-**How it reaches the internet**, first match wins:
+### 1.2 Netdata (metrics + 30-day local database)
 
-1. an address you give (`--public-url https://…`, e.g. your own ngrok pointing at `127.0.0.1:19998`);
-2. an ngrok that is already running for the agent;
-3. Tailscale that is already installed and logged in on the machine (it turns on Funnel for the agent);
-4. the address saved by an earlier install;
-5. Tailscale built into the agent: the first run prints a login link.
+```bash
+wget -O /tmp/netdata-kickstart.sh https://get.netdata.cloud/kickstart.sh
+sh /tmp/netdata-kickstart.sh --stable-channel --disable-telemetry --non-interactive
 
-The agent starts within a second of boot, restarts by itself within 2 seconds, and sets up a `server-pulse-ngrok` service when it finds ngrok so the tunnel comes back after a power cut.
+sudo tee -a /etc/netdata/netdata.conf > /dev/null <<'EOF'
 
-Servers set up with the earlier Netdata + Caddy kit keep working with the same `SERVER_URL`.
+[web]
+    bind to = 127.0.0.1
+
+[db]
+    mode = dbengine
+    dbengine tier 0 retention time = 30d
+EOF
+
+sudo systemctl restart netdata
+curl -s -o /dev/null -w '%{http_code}\n' http://127.0.0.1:19999/api/v1/info   # → 200
+```
+
+### 1.3 Caddy (one login, two users)
+
+`owner` is for you in the browser; `dashboard` is a separate read-only credential used only by the Vercel app, so you can rotate it without touching your own.
+
+```bash
+sudo apt install -y debian-keyring debian-archive-keyring apt-transport-https gnupg
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
+curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list
+sudo apt update && sudo apt install -y caddy
+
+OWNER_HASH=$(caddy hash-password --plaintext 'CHANGE_ME_owner_password')
+APP_HASH=$(caddy hash-password --plaintext 'CHANGE_ME_app_password')
+
+sudo tee /etc/caddy/Caddyfile > /dev/null <<EOF
+:8080 {
+    bind 127.0.0.1
+    encode zstd gzip
+    basicauth {
+        owner ${OWNER_HASH}
+        dashboard ${APP_HASH}
+    }
+    redir /history /history/
+    handle_path /history/* {
+        reverse_proxy 127.0.0.1:19999
+    }
+    handle {
+        reverse_proxy 127.0.0.1:7681
+    }
+}
+EOF
+
+caddy validate --config /etc/caddy/Caddyfile --adapter caddyfile
+sudo systemctl enable --now caddy && sudo systemctl restart caddy
+```
+
+### 1.4 Tunnel — option A: Tailscale Funnel (recommended)
+
+```bash
+curl -fsSL https://tailscale.com/install.sh | sh
+sudo tailscale up                 # log in with the link it prints
+sudo tailscale funnel --bg 8080   # first run prints a link to enable HTTPS + Funnel; open it, then re-run
+tailscale funnel status           # shows https://<machine>.<tailnet>.ts.net
+```
+
+`--bg` makes the Funnel persist across reboots, and `tailscaled` runs as a systemd service.
+
+> **Needed for 24/7:** turn off key expiry, or the link stops working after about 180 days. In the [Tailscale admin console](https://login.tailscale.com/admin/machines) open **Machines → ⋯ next to this server → Disable key expiry**. Check with:
+>
+> ```bash
+> tailscale status --json | python3 -c 'import json,sys; print(json.load(sys.stdin)["Self"].get("KeyExpiry") or "key expiry disabled ✓")'
+> ```
+
+Your server link is:
+
+```text
+https://dashboard:CHANGE_ME_app_password@<machine>.<tailnet>.ts.net/history
+```
+
+### 1.4 Tunnel — option B: ngrok (budget mode)
+
+<details>
+<summary>Show ngrok setup</summary>
+
+```bash
+curl -sSL https://ngrok-agent.s3.amazonaws.com/ngrok.asc | sudo tee /etc/apt/trusted.gpg.d/ngrok.asc >/dev/null
+echo "deb https://ngrok-agent.s3.amazonaws.com bookworm main" | sudo tee /etc/apt/sources.list.d/ngrok.list
+sudo apt update && sudo apt install -y ngrok
+ngrok config add-authtoken CHANGE_ME_YOUR_AUTHTOKEN
+
+NGROK_DOMAIN='CHANGE_ME.ngrok-free.app'   # your free dev domain from the ngrok dashboard
+sudo tee /etc/systemd/system/ngrok-pulse.service > /dev/null <<EOF
+[Unit]
+Description=ngrok tunnel for Server Pulse
+After=network-online.target caddy.service
+Wants=network-online.target
+
+[Service]
+User=$USER
+ExecStart=$(command -v ngrok) http 8080 --url=https://${NGROK_DOMAIN} --log=stdout
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+EOF
+sudo systemctl daemon-reload && sudo systemctl enable --now ngrok-pulse
+```
+
+Server link: `https://dashboard:CHANGE_ME_app_password@CHANGE_ME.ngrok-free.app/history`. The dashboard detects ngrok from the host and switches to budget mode automatically.
+
+The tunnel itself stays up 24/7 (systemd restarts it within 5 s, and the free static domain never changes). Only the dashboard's *live view* is rationed: it pauses at 80 % of the free 20,000 requests a month (≈ 54 h of live viewing), while history sync, Netdata recording and alerts keep running.
+
+</details>
+
+### 1.5 Keep the machine awake (24/7)
+
+A server that sleeps drops the tunnel and stops recording. This disables sleep, suspend and hibernate, and stops a closed laptop lid from suspending (harmless on a VPS):
+
+```bash
+sudo systemctl mask sleep.target suspend.target hibernate.target hybrid-sleep.target
+sudo mkdir -p /etc/systemd/logind.conf.d
+sudo tee /etc/systemd/logind.conf.d/server-pulse.conf > /dev/null <<'EOF'
+[Login]
+HandleLidSwitch=ignore
+HandleLidSwitchExternalPower=ignore
+HandleLidSwitchDocked=ignore
+EOF
+systemctl is-enabled sleep.target suspend.target   # both → masked; lid setting applies after the reboot below
+```
+
+### 1.6 Verify
+
+```bash
+systemctl is-active btop-web netdata caddy            # all "active"
+curl -s -o /dev/null -w '%{http_code}\n' -u dashboard:CHANGE_ME_app_password \
+  https://<your-public-host>/history/api/v1/info        # → 200
+sudo reboot                                             # then re-run the checks
+```
+
+Open `https://<your-public-host>/` in a browser and log in as `owner` to see btop live.
+
+---
 
 ## ☁️ Part 2 — Dashboard (Vercel)
 
@@ -366,30 +532,30 @@ vercel env pull .env.local
 npm run dev
 ```
 
-| Script                | What it does                                       |
-| --------------------- | -------------------------------------------------- |
-| `npm run dev`         | Start the dev server                               |
-| `npm run build`       | Run migrations (if a DB is set), then `next build` |
-| `npm run lint`        | ESLint                                             |
-| `npm run typecheck`   | TypeScript, no emit                                |
-| `npm test`            | Unit tests (Node's built-in runner, no extra deps) |
-| `npm run db:generate` | Generate a migration from `lib/db/schema.ts`       |
+| Script | What it does |
+| --- | --- |
+| `npm run dev` | Start the dev server |
+| `npm run build` | Run migrations (if a DB is set), then `next build` |
+| `npm run lint` | ESLint |
+| `npm run typecheck` | TypeScript, no emit |
+| `npm test` | Unit tests (Node's built-in runner, no extra deps) |
+| `npm run db:generate` | Generate a migration from `lib/db/schema.ts` |
 
 ---
 
 ## ⚙️ Configuration reference
 
-| Variable                                                             | Required    | Default                      | Description                                                                                                                                                  |
-| -------------------------------------------------------------------- | ----------- | ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `SERVER_URL`                                                         | ✅          | —                            | `https://USER:PASS@host` (root or `/history`). Alias: `NGROK_URL`. Can be overridden in Settings.                                                            |
-| `DATABASE_URL`                                                       | Auto        | —                            | Added by the Neon integration (also reads `POSTGRES_URL`).                                                                                                   |
-| `DASHBOARD_PASSWORD`                                                 | —           | Password inside `SERVER_URL` | Owner login.                                                                                                                                                 |
-| `VIEWER_PASSWORD`                                                    | —           | Off                          | Read-only login: Live, History, Reports.                                                                                                                     |
-| `SESSION_SECRET`                                                     | Recommended | Derived from other secrets   | Signs session cookies and encrypts saved server links. Set it before creating accounts and never change it.                                                  |
-| `CRON_SECRET`                                                        | —           | Off                          | If set, `/api/cron/sync` requires `Authorization: Bearer …`. If unset, the job is throttled to once per 10 min.                                              |
-| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `ALERT_EMAIL_TO` | —           | Off                          | Enables the "server offline" email to `ALERT_EMAIL_TO` for the env-configured server. (Account addresses are not verified yet, so accounts are not emailed.) |
-| `DISABLE_SIGNUP`                                                     | —           | Off                          | `1` stops new accounts being created.                                                                                                                        |
-| `ALLOW_PRIVATE_LINKS`                                                | —           | Off                          | `1` lets accounts use links to private / LAN addresses (self-hosted dashboards only).                                                                        |
+| Variable | Required | Default | Description |
+| --- | --- | --- | --- |
+| `SERVER_URL` | ✅ | — | `https://USER:PASS@host` (root or `/history`). Alias: `NGROK_URL`. Can be overridden in Settings. |
+| `DATABASE_URL` | Auto | — | Added by the Neon integration (also reads `POSTGRES_URL`). |
+| `DASHBOARD_PASSWORD` | — | Password inside `SERVER_URL` | Owner login. |
+| `VIEWER_PASSWORD` | — | Off | Read-only login: Live, History, Reports. |
+| `SESSION_SECRET` | Recommended | Derived from other secrets | Signs session cookies and encrypts saved server links. Set it before creating accounts and never change it. |
+| `CRON_SECRET` | — | Off | If set, `/api/cron/sync` requires `Authorization: Bearer …`. If unset, the job is throttled to once per 10 min. |
+| `SMTP_HOST`, `SMTP_PORT`, `SMTP_USER`, `SMTP_PASS`, `ALERT_EMAIL_TO` | — | Off | Enables the "server offline" email to `ALERT_EMAIL_TO` for the env-configured server. (Account addresses are not verified yet, so accounts are not emailed.) |
+| `DISABLE_SIGNUP` | — | Off | `1` stops new accounts being created. |
+| `ALLOW_PRIVATE_LINKS` | — | Off | `1` lets accounts use links to private / LAN addresses (self-hosted dashboards only). |
 
 `vercel.json`:
 
@@ -406,12 +572,12 @@ npm run dev
 
 ## 🕰️ How history works
 
-| Stage                    | Where                 | Resolution | Kept for        |
-| ------------------------ | --------------------- | ---------- | --------------- |
-| Collected                | Netdata on the server | 1 s        | 30 days         |
-| Backfill (first connect) | Neon                  | 5 min      | until rolled up |
-| Nightly sync (last 26 h) | Neon                  | 1 min      | 30 days         |
-| Rollup                   | Neon                  | 1 hour     | 1 year +        |
+| Stage | Where | Resolution | Kept for |
+| --- | --- | --- | --- |
+| Collected | Netdata on the server | 1 s | 30 days |
+| Backfill (first connect) | Neon | 5 min | until rolled up |
+| Nightly sync (last 26 h) | Neon | 1 min | 30 days |
+| Rollup | Neon | 1 hour | 1 year + |
 
 - The 26-hour window overlaps the previous run by 2 hours, covering Hobby cron's ±59-minute timing and occasional missed runs.
 - If the dashboard is down for days, the next sync and a manual **Backfill** fill the gap from Netdata (up to 30 days back).
@@ -419,15 +585,15 @@ npm run dev
 
 **Tracked charts**
 
-| Netdata chart                            | Shown as                  | Unit              |
-| ---------------------------------------- | ------------------------- | ----------------- |
-| `system.cpu`                             | CPU % (sum of dimensions) | %                 |
-| `system.ram`                             | used ÷ total              | %, GiB            |
-| `system.load`                            | load1 / load5 / load15    | —                 |
-| `system.io`                              | read / write (abs)        | KiB/s             |
-| `system.net`                             | in / out (abs)            | kbit/s, GB totals |
-| `disk_space./` (fallback `disk_space._`) | used ÷ (used + avail)     | %, GiB            |
-| context `sensors.temperature`            | hottest sensor            | °C                |
+| Netdata chart | Shown as | Unit |
+| --- | --- | --- |
+| `system.cpu` | CPU % (sum of dimensions) | % |
+| `system.ram` | used ÷ total | %, GiB |
+| `system.load` | load1 / load5 / load15 | — |
+| `system.io` | read / write (abs) | KiB/s |
+| `system.net` | in / out (abs) | kbit/s, GB totals |
+| `disk_space./` (fallback `disk_space._`) | used ÷ (used + avail) | %, GiB |
+| context `sensors.temperature` | hottest sensor | °C |
 
 ---
 
@@ -483,32 +649,32 @@ CREATE TABLE settings (
 
 **App routes** (all require a session unless noted)
 
-| Route                                         | Method        | Access                     | Purpose                                                                                                       |
-| --------------------------------------------- | ------------- | -------------------------- | ------------------------------------------------------------------------------------------------------------- |
-| `/api/login`, `/api/logout`                   | POST          | Public / session           | Start or end a session (`email` + `password` for accounts, `password` alone for the shared login)             |
-| `/api/signup`                                 | POST          | Public                     | Create an account                                                                                             |
-| `/api/account`                                | POST / DELETE | Account                    | Change password / delete account and its history                                                              |
-| `/api/live`                                   | GET           | Owner, viewer              | Latest values; one shared server request per interval                                                         |
-| `/api/history?from=&to=[&chart=]`             | GET           | Owner, viewer              | Bucketed series for every chart (or one), with gaps and their reasons, where monitoring started, and coverage |
-| `/api/reports`                                | GET           | Owner, viewer              | 12 months of aggregates                                                                                       |
-| `/api/backfill`                               | GET           | Owner                      | Is the dashboard behind the server?                                                                           |
-| `/api/backfill`                               | POST          | Owner                      | One 40-s step of copying missing history from the server                                                      |
-| `/api/settings`                               | GET           | Owner                      | Status for the Settings page                                                                                  |
-| `/api/settings/link`, `/api/settings/test`    | POST          | Owner                      | Save / test the server link (`DELETE` on link reverts to `SERVER_URL`)                                        |
-| `/api/logs?prio=&unit=&after=&since=&until=`  | GET           | Owner                      | Recent log lines (fallback when the browser can't reach the agent), or a past window oldest first, 500 a page |
-| `/api/logs/token`                             | POST          | Owner                      | 60-s single-use token for the live log stream                                                                 |
-| `/api/events?before=&severity=&since=&until=` | GET           | Owner                      | Failure history (newest first) and per-severity counts for the window                                         |
-| `/api/agent/pair-approve`                     | POST          | Owner                      | Approve or reject a server that redeemed a pairing code                                                       |
-| `/api/cron/sync`                              | GET           | `CRON_SECRET` or throttled | Nightly sync, rollup, offline check                                                                           |
+| Route | Method | Access | Purpose |
+| --- | --- | --- | --- |
+| `/api/login`, `/api/logout` | POST | Public / session | Start or end a session (`email` + `password` for accounts, `password` alone for the shared login) |
+| `/api/signup` | POST | Public | Create an account |
+| `/api/account` | POST / DELETE | Account | Change password / delete account and its history |
+| `/api/live` | GET | Owner, viewer | Latest values; one shared server request per interval |
+| `/api/history?from=&to=[&chart=]` | GET | Owner, viewer | Bucketed series for every chart (or one), with gaps and their reasons, where monitoring started, and coverage |
+| `/api/reports` | GET | Owner, viewer | 12 months of aggregates |
+| `/api/backfill` | GET | Owner | Is the dashboard behind the server? |
+| `/api/backfill` | POST | Owner | One 40-s step of copying missing history from the server |
+| `/api/settings` | GET | Owner | Status for the Settings page |
+| `/api/settings/link`, `/api/settings/test` | POST | Owner | Save / test the server link (`DELETE` on link reverts to `SERVER_URL`) |
+| `/api/logs?prio=&unit=&after=&since=&until=` | GET | Owner | Recent log lines (fallback when the browser can't reach the agent), or a past window oldest first, 500 a page |
+| `/api/logs/token` | POST | Owner | 60-s single-use token for the live log stream |
+| `/api/events?before=&severity=&since=&until=` | GET | Owner | Failure history (newest first) and per-severity counts for the window |
+| `/api/agent/pair-approve` | POST | Owner | Approve or reject a server that redeemed a pairing code |
+| `/api/cron/sync` | GET | `CRON_SECRET` or throttled | Nightly sync, rollup, offline check |
 
 **Netdata endpoints used** (server, read-only)
 
-| Endpoint                                                                                   | Used for                                          |
-| ------------------------------------------------------------------------------------------ | ------------------------------------------------- |
-| `GET /api/v1/info`                                                                         | Hostname, OS, cores, RAM, uptime, connection test |
-| `GET /api/v1/allmetrics?format=json`                                                       | All live values in one call                       |
-| `GET /api/v1/data?chart=&after=&before=&points=&group=average&format=json&options=seconds` | Seeding charts, sync, backfill                    |
-| `GET /api/v1/charts`                                                                       | Discovering temperature and disk charts           |
+| Endpoint | Used for |
+| --- | --- |
+| `GET /api/v1/info` | Hostname, OS, cores, RAM, uptime, connection test |
+| `GET /api/v1/allmetrics?format=json` | All live values in one call |
+| `GET /api/v1/data?chart=&after=&before=&points=&group=average&format=json&options=seconds` | Seeding charts, sync, backfill |
+| `GET /api/v1/charts` | Discovering temperature and disk charts |
 
 Every server call sends basic auth from the link plus `ngrok-skip-browser-warning: 1`, and times out after 8 s.
 
@@ -764,9 +930,9 @@ sudo /usr/local/bin/btop-report.py --now     # send a test email now
 
 ## 🔒 Security
 
-- **Read-only everywhere.** The agent's API only reads; the dashboard has no write path to the server.
-- **Nothing listens publicly.** The agent binds to `127.0.0.1:19998`; only the outbound tunnel reaches it. It runs as its own locked-down user (`DynamicUser`, read-only system, 300 MB memory cap).
-- **Pairing** codes work once for 10 minutes and only their SHA-256 is stored; nothing connects until you approve the server by name.
+- **Read-only everywhere.** ttyd runs without `-W`; Netdata's API is read-only; the dashboard has no write path to the server.
+- **Nothing listens publicly.** ttyd, Netdata and Caddy bind to `127.0.0.1`; only the outbound tunnel reaches them.
+- **Two credentials.** `owner` for you, `dashboard` for the app — rotate either independently by re-running step 1.3.
 - **Secrets stay server-side.** `SERVER_URL` lives in Vercel as a Sensitive env var; it never appears in client bundles, logs or API responses, and is masked in Settings.
 - **Sessions** are httpOnly, Secure, SameSite=Lax cookies; viewers get 403 on Settings, Sync and Backfill. Changing a password (account or env) signs out other devices.
 - **Accounts** are isolated: every query is scoped to the session's server. Passwords use scrypt; saved links are AES-256-GCM encrypted.
@@ -777,17 +943,18 @@ sudo /usr/local/bin/btop-report.py --now     # send a test email now
 
 ## 🩺 Troubleshooting
 
-| Symptom                                                  | Fix                                                                                                                                                                                                      |
-| -------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Dashboard says **Server offline**                        | On the server: `systemctl is-active server-pulse-agent` and `tailscale funnel status` (or `systemctl status server-pulse-ngrok`); in the dashboard, **Settings → Test connection** shows the exact error |
-| Connection test returns **401**                          | The saved link's password is wrong: run the **Add server** command again (it keeps your history)                                                                                                         |
-| **Offline after months** of working (Tailscale)          | The machine's key expired: in the Tailscale admin console choose **Disable key expiry** for the machine, then run the **Add server** command again                                                       |
-| Offline whenever the **laptop sleeps** or the lid closes | The agent turns sleep off when it installs; if you installed with `--no-keep-awake`, run the **Add server** command again without it                                                                     |
-| Live view **paused**                                     | ngrok budget mode hit 80 % of the monthly quota; switch to Tailscale Funnel or wait for the reset date shown in Settings                                                                                 |
-| History is **empty**                                     | Database not connected: Vercel → Storage → Neon → Redeploy; then **Settings → Fill missing history** (or just keep a page open: it fills in by itself)                                                   |
-| Sync shows **errors**                                    | Check `sync_runs` in Settings; the next nightly run re-fills the last 26 h                                                                                                                               |
-| No **Telegram** alerts                                   | Re-check the bot token and chat ID; run the test command in [Alerts](#-alerts)                                                                                                                           |
-| Report email **not sent**                                | `journalctl -u btop-report -n 30`; Gmail needs an App Password, not your normal password                                                                                                                 |
+| Symptom | Fix |
+| --- | --- |
+| Dashboard says **Server offline** | `systemctl is-active caddy netdata`; `tailscale funnel status` (or `systemctl status ngrok-pulse`); run **Settings → Test connection** to see the exact error |
+| Connection test returns **401** | Wrong user/password in `SERVER_URL`; re-run step 1.3 or fix the link in Settings |
+| **Offline after months** of working (Tailscale) | The machine's key expired: run `sudo tailscale up`, then disable key expiry (step 1.4) so it doesn't happen again |
+| Offline whenever the **laptop sleeps** or the lid closes | Run step 1.5 and reboot |
+| Live view **paused** | ngrok budget mode hit 80 % of the monthly quota; switch to Tailscale Funnel or wait for the reset date shown in Settings |
+| History is **empty** | Database not connected: Vercel → Storage → Neon → Redeploy; then **Settings → Fill missing history** (or just keep a page open: it fills in by itself) |
+| Sync shows **errors** | Check `sync_runs` in Settings; the next nightly run re-fills the last 26 h |
+| btop page **garbled** | Make sure the service has `Environment=TERM=xterm-256color`; zoom the browser out |
+| No **Telegram** alerts | Re-check the bot token and chat ID; run the test command in [Alerts](#-alerts) |
+| Report email **not sent** | `journalctl -u btop-report -n 30`; Gmail needs an App Password, not your normal password |
 
 **Useful commands**
 
@@ -807,7 +974,7 @@ sudo /usr/local/bin/btop-report.py      # days until the next report
 - [x] Dashboard MVP: one-link setup, login, demo mode, Live page
 - [x] History + reports: Neon, nightly sync, backfill, rollup, Reports page
 - [x] Alerts (Telegram + email), viewer password, installable PWA
-- [x] One-command server setup (_Add server_)
+- [x] In-app server setup guide (`/setup`)
 - [x] Accounts, in-app connect (`/connect`), light/dark theme, responsive 320 px → 4K
 - [ ] v2: several servers, one link each, server switcher
 
@@ -815,7 +982,7 @@ sudo /usr/local/bin/btop-report.py      # days until the next report
 
 ## 📄 License
 
-MIT © MonoEdge Solutions Pvt Ltd
+MIT © MonoEdge Solutions Pvt Ltd 
 
 ---
 

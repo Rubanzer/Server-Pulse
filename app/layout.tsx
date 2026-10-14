@@ -7,25 +7,13 @@ import { THEME_SCRIPT } from "@/components/theme-toggle";
 import { COOKIE, verifySession } from "@/lib/session";
 import "./globals.css";
 
-const plex = IBM_Plex_Sans({
-  subsets: ["latin"],
-  weight: ["400", "500", "600"],
-  variable: "--font-plex",
-});
-const plexCond = IBM_Plex_Sans_Condensed({
-  subsets: ["latin"],
-  weight: ["500", "600"],
-  variable: "--font-plex-cond",
-});
+const plex = IBM_Plex_Sans({ subsets: ["latin"], weight: ["400", "500", "600"], variable: "--font-plex" });
+const plexCond = IBM_Plex_Sans_Condensed({ subsets: ["latin"], weight: ["500", "600"], variable: "--font-plex-cond" });
 
 export const metadata: Metadata = {
   title: { default: "Server Pulse", template: "%s · Server Pulse" },
   description: "Live vitals and a year of history for your Ubuntu server.",
-  appleWebApp: {
-    capable: true,
-    title: "Server Pulse",
-    statusBarStyle: "default",
-  },
+  appleWebApp: { capable: true, title: "Server Pulse", statusBarStyle: "default" },
 };
 
 export const viewport: Viewport = {
@@ -38,35 +26,17 @@ export const viewport: Viewport = {
   ],
 };
 
-export default async function RootLayout({
-  children,
-}: {
-  children: React.ReactNode;
-}) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
   const s = await verifySession((await cookies()).get(COOKIE)?.value);
   return (
     // data-theme is set by THEME_SCRIPT before hydration, so React must not complain about it
-    <html
-      lang="en"
-      className={`${plex.variable} ${plexCond.variable}`}
-      suppressHydrationWarning
-    >
+    <html lang="en" className={`${plex.variable} ${plexCond.variable}`} suppressHydrationWarning>
       <head>
         <script dangerouslySetInnerHTML={{ __html: THEME_SCRIPT }} />
       </head>
       <body className="min-h-dvh antialiased">
-        <a
-          href="#main"
-          className="sr-only focus:not-sr-only focus:fixed focus:left-2 focus:top-2 focus:z-50 focus:rounded-md focus:bg-surface focus:px-3 focus:py-2 focus:text-sm focus:font-medium"
-        >
-          Skip to content
-        </a>
         <Nav role={s?.role ?? null} email={s?.email ?? null} />
-        <main
-          id="main"
-          tabIndex={-1}
-          className="mx-auto w-full max-w-6xl min-w-0 px-4 pb-[max(4rem,env(safe-area-inset-bottom))] pt-4 sm:px-6 2xl:max-w-[100rem] min-[2200px]:max-w-[140rem]"
-        >
+        <main className="mx-auto w-full max-w-6xl min-w-0 px-4 pb-[max(4rem,env(safe-area-inset-bottom))] pt-4 sm:px-6 2xl:max-w-[100rem]">
           {children}
         </main>
         {s?.role === "owner" && <BackfillRunner />}
