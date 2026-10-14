@@ -71,6 +71,8 @@ export async function deleteAccount(s: Session, password: string): Promise<boole
     WITH a AS (DELETE FROM samples WHERE server_id = ${s.sid}),
          b AS (DELETE FROM sync_runs WHERE server_id = ${s.sid}),
          c AS (DELETE FROM settings WHERE key LIKE ${s.sid + ":%"}),
+         e AS (DELETE FROM events WHERE server_id = ${s.sid}),
+         p AS (DELETE FROM pairings WHERE server_id = ${s.sid}),
          d AS (DELETE FROM servers WHERE id = ${s.sid})
     DELETE FROM users WHERE id = ${u.id}`);
   return true;

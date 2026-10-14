@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 import { fmtNum } from "@/components/chart-utils";
 import type { MonthRow } from "@/lib/reports";
+import { toLogin } from "@/lib/navigate";
 
 type Res = { source: string; months: MonthRow[] } | { error: string };
 
@@ -12,7 +13,10 @@ export default function ReportsPage() {
   const [now] = useState(() => Date.now() / 1000);
   useEffect(() => {
     fetch("/api/reports")
-      .then((r) => r.json() as Promise<Res>)
+      .then((r) => {
+        if (r.status === 401) toLogin();
+        return r.json() as Promise<Res>;
+      })
       .then(setRes)
       .catch((e: Error) => setRes({ error: e.message }));
   }, []);

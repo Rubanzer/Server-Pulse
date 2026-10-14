@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { hardNavigate } from "@/lib/navigate";
+import Link from "next/link";
+import { hardNavigate, toLogin } from "@/lib/navigate";
 import { CodeBlock } from "./code-block";
 import { LinkForm } from "./link-form";
 
@@ -43,6 +44,8 @@ export function AddServer({ database }: { database: boolean }) {
       () => null,
     );
     const body = r ? await r.json().catch(() => ({})) : {};
+    if (r?.status === 401) return toLogin();
+    if (r?.status === 403) return setError("signup"); // demo login with a database: an account is needed first
     if (!r?.ok)
       return setError(
         body.error ??
@@ -104,6 +107,10 @@ export function AddServer({ database }: { database: boolean }) {
           setTimeout(() => hardNavigate("/server"), 1200);
           return;
         }
+        // connected but not answering: say so instead of spinning forever
+        if (live?.mode === "offline" || live?.mode === "error")
+          setAgentError(`Connected, but no live data yet: ${live.error ?? "the server isn't answering"}. Settings → Test connection shows the exact problem.`);
+        else setAgentError(null);
       }
       if (!stop) setTimeout(tick, 2000);
     };
@@ -173,7 +180,14 @@ export function AddServer({ database }: { database: boolean }) {
             dashboard and keeps it running 24/7.
           </p>
         </div>
-        {error ? (
+        {error === "signup" ? (
+          <div className="flex flex-wrap items-center gap-3 rounded-lg border border-line p-3 text-sm">
+            <span>Create a free account first. Then this page gives you the install command.</span>
+            <Link href="/signup" className="rounded-lg bg-signal px-3 py-1.5 font-medium text-on-signal">
+              Create account
+            </Link>
+          </div>
+        ) : error ? (
           <p role="alert" className="text-sm text-crit">
             {error}
           </p>

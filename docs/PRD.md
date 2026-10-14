@@ -694,3 +694,19 @@ Found on the owner's server: Tailscale Funnel stopped passing connections. The T
   - It runs as root, so it is only installed when the agent binary and its folder can't be changed by other users. The unit has a fixed PATH, `NoNewPrivileges`, `PrivateTmp` and `ProtectHome`.
 - **Dashboard:** connection errors are worded per tunnel with the one thing to check (Funnel, ngrok, DNS, refused). The raw code stays at the end, e.g. `(ECONNRESET)`.
 - **Safety:** anything printed from another program passes through a filter that drops control characters, so no terminal escape sequences get through.
+
+### Update: zero-defect audit fixes (agent 1.3.4)
+A nine-lens audit (runtime errors, visual, UX, front-end logic, API and data, agent, smoothness, accessibility, install and docs) with three independent verifiers per finding. Confirmed and fixed:
+- **Server page crashed to a blank "Application error"** on a server with no physical disk or network card (containers, some VMs): the agent sent `null` lists. The agent (1.3.4) now sends empty lists, the dashboard tolerates `null` from older agents, and a page-level error screen ("Something went wrong on this page, Try again") replaces Next's bare one.
+- **Hourly peak minute for Disk I/O and Network** was ranked by reads minus writes (writes are stored negative), so the quietest write minute could be kept as the hour's peak. It now ranks by magnitude.
+- **Deleting an account** left its failures and pairing codes (with an encrypted pending link) behind. They are removed too.
+- **"New rows" after a sync** counted re-written overlap rows. It now counts only real inserts.
+- **Nightly cron:** the failure-history pull could run past the function's time cap and leave a sync run unfinished. It is skipped when the budget is spent.
+- **A session that ended on another device** (password changed, account deleted) showed raw "Not logged in" on Reports, Settings and Add server. They now go to the login page and come back.
+- **Change password** asks for the new password twice, like sign-up: one typo no longer locks the owner out.
+- **Add server with the demo login** (database connected, no account) showed a raw 403 message. It now shows "Create a free account first" with a button.
+- **After approval,** "Receiving live data" could spin forever. It now says when the server isn't answering, with a pointer to Settings → Test connection.
+- **Live status** said "No internet connection" for any dashboard error. It now says "Dashboard not responding" when the browser is online.
+- **History presets** fired a throwaway request for the old range when the minute had ticked. Both state changes now happen in one transition.
+- **Older TV and Safari 12 browsers:** charts no longer throw when ResizeObserver or Web Animations are missing; they measure on resize and draw without the glide.
+- **Polish:** browser-tab titles for Settings and Reports; a friendly 404 page; "threads" on the Live load tile to match the Server page.

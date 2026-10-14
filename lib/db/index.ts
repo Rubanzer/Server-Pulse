@@ -48,4 +48,4 @@ export const peakRank = (chart: SQL, values: SQL) => sql`CASE ${chart}
   WHEN 'ram' THEN (${values}->>'used')::float8
   WHEN 'disk' THEN (${values}->>'used')::float8
   WHEN 'load' THEN (${values}->>'load1')::float8
-  ELSE (SELECT sum(x.value::float8) FROM jsonb_each_text(${values}) x) END`;
+  ELSE (SELECT sum(abs(x.value::float8)) FROM jsonb_each_text(${values}) x) END`; // writes / sent are stored negative

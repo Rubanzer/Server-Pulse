@@ -202,7 +202,7 @@ function KpiValue({
           <Big n={v.load1} unit="" digits={2} />
           <p className="mt-1 text-xs text-muted">
             5 min {fmtNum(v.load5)} · 15 min {fmtNum(v.load15)}
-            {info?.cores ? ` · ${info.cores} cores` : ""}
+            {info?.cores ? ` · ${info.cores} threads` : ""}
           </p>
         </>
       );
@@ -561,7 +561,7 @@ function Status({
   latestT: number | null;
 }) {
   const [label, cls] = error
-    ? ["No internet connection", "text-crit"]
+    ? [typeof navigator !== "undefined" && !navigator.onLine ? "No internet connection" : "Dashboard not responding", "text-crit"]
     : data?.mode === "live"
       ? ["Live", "text-ok"]
       : data?.mode === "demo"

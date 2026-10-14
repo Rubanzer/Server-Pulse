@@ -131,7 +131,8 @@ function useServerFrames() {
         };
       });
 
-    const onFrame = (f: PulseFrame) => {
+    const onFrame = (raw: PulseFrame) => {
+      const f = mergeFrame(null, raw); // normalised (no null lists) before anything reads it
       setFrame((prev) => mergeFrame(prev, f));
       setLastAt(Date.now());
       const r = rings.current;

@@ -5,7 +5,7 @@ import { useCallback, useEffect, useState } from "react";
 import { input } from "@/components/auth-forms";
 import { requestCatchUp } from "@/components/backfill-runner";
 import { LinkForm } from "@/components/link-form";
-import { hardNavigate } from "@/lib/navigate";
+import { hardNavigate, toLogin } from "@/lib/navigate";
 import type { ServerInfo } from "@/lib/netdata";
 import type { Usage } from "@/lib/usage";
 
@@ -124,6 +124,7 @@ function AccountSection({ email }: { email: string }) {
           e.preventDefault();
           const form = e.currentTarget;
           const fd = new FormData(form);
+          if (fd.get("next") !== fd.get("confirm")) return setMsg({ ok: false, text: "The two new passwords don't match." });
           setBusy(true);
           const r = await call("/api/account", {
             method: "POST",
@@ -169,6 +170,10 @@ function AccountSection({ email }: { email: string }) {
             minLength={10}
             className={input}
           />
+        </label>
+        <label className="block">
+          <span className="text-sm font-medium">New password again</span>
+          <input name="confirm" type="password" autoComplete="new-password" required minLength={10} className={input} />
         </label>
         <button disabled={busy} className={primary}>
           Change password
@@ -247,11 +252,10 @@ export default function SettingsPage() {
 
   const load = useCallback(() => {
     fetch("/api/settings")
-      .then(async (r) =>
-        r.ok
-          ? setS(await r.json())
-          : setErr(((await r.json()) as { error: string }).error),
-      )
+      .then(async (r) => {
+        if (r.status === 401) return toLogin(); // the session ended (password changed elsewhere): log in again
+        return r.ok ? setS(await r.json()) : setErr(((await r.json().catch(() => ({}))) as { error?: string }).error ?? `HTTP ${r.status}`);
+      })
       .catch((e: Error) => setErr(e.message));
   }, []);
   useEffect(load, [load]);

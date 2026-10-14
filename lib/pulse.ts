@@ -23,6 +23,8 @@ export type PulseFrame = {
 
 /** Delta frames omit slow-changing parts (disks, model, MHz, processes); keep the last known values. */
 export function mergeFrame(prev: PulseFrame | null, next: PulseFrame): PulseFrame {
+  // agents before 1.3.4 send null for an empty list (no physical disk or NIC): never let that reach the UI
+  next = { ...next, io: next.io ?? [], net: next.net ?? [], cpu: { ...next.cpu, cores: next.cpu.cores ?? [] } };
   if (!prev || prev.boot !== next.boot) return next; // server rebooted: start over
   return {
     ...next,

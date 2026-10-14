@@ -34,6 +34,8 @@ type Props = {
 };
 
 const PAD = { l: 44, r: 8, t: 8, b: 20 }; // at 16 px root; scaled with it
+// no Web Animations (Safari 12, some TV engines): the chart still draws, it just doesn't glide
+const canAnimate = () => typeof HTMLElement !== "undefined" && typeof HTMLElement.prototype.animate === "function";
 const AHEAD = 30; // seconds the line is drawn past its newest point (it holds its last value)
 const HM = new Intl.DateTimeFormat([], { hour: "2-digit", minute: "2-digit" });
 const HMS = new Intl.DateTimeFormat([], {
@@ -72,16 +74,20 @@ function LiveChartImpl({
   useEffect(() => {
     const el = wrap.current;
     if (!el) return;
-    const ro = new ResizeObserver(([e]) => {
+    const measure = () => {
       const k =
         parseFloat(getComputedStyle(document.documentElement).fontSize) / 16 ||
         1;
-      setBox({
-        w: Math.round(e!.contentRect.width),
-        h: Math.round(e!.contentRect.height),
-        k,
-      });
-    });
+      const r = el.getBoundingClientRect();
+      setBox({ w: Math.round(r.width), h: Math.round(r.height), k });
+    };
+    if (typeof ResizeObserver === "undefined") {
+      // older TV and kiosk browsers: measure once and on window resize
+      requestAnimationFrame(measure);
+      window.addEventListener("resize", measure);
+      return () => window.removeEventListener("resize", measure);
+    }
+    const ro = new ResizeObserver(measure);
     ro.observe(el);
     return () => ro.disconnect();
   }, []);
@@ -130,7 +136,7 @@ function LiveChartImpl({
 
   // the scroll: one compositor animation per reading, from "just arrived" to 30 s later
   useLayoutEffect(() => {
-    if (!geo || reducedMotion()) return;
+    if (!geo || reducedMotion() || !canAnimate()) return;
     const run = slides.current.filter((el): el is HTMLDivElement => !!el);
     const shift = -AHEAD * geo.pxPerSec;
     const anims = run.map((el) =>
@@ -150,7 +156,7 @@ function LiveChartImpl({
   useLayoutEffect(() => {
     const from = prevTarget.current;
     prevTarget.current = target;
-    if (!lines.current || from === target || !from || reducedMotion()) return;
+    if (!lines.current || from === target || !from || reducedMotion() || !canAnimate()) return;
     lines.current.animate(
       [{ transform: `scaleY(${target / from})` }, { transform: "scaleY(1)" }],
       { duration: 350, easing: "ease-out" },
