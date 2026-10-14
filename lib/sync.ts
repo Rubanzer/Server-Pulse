@@ -24,8 +24,8 @@ async function insert(sid: string, metric: Metric, points: RawPoint[], resolutio
       .values(part.map((p) => ({ serverId: sid, chart: metric, ts: new Date(p.t * 1000), values: p.d, resolutionS })))
       // a re-fetched minute overwrites its old row: two catch-ups at once both end with the right data
       .onConflictDoUpdate({ target: [schema.samples.serverId, schema.samples.chart, schema.samples.ts, schema.samples.resolutionS], set: { values: sql`excluded.values` } })
-      .returning({ id: schema.samples.id });
-    n += rows.length;
+      .returning({ fresh: sql<boolean>`(xmax = 0)` }); // true for an insert, false for a re-written overlap row
+    n += rows.filter((r) => r.fresh).length;
   }
   return n;
 }
@@ -230,7 +230,8 @@ export async function syncServer(link: ServerLink | null, deadline?: number): Pr
     const status = errors.length === 0 ? "ok" : errors.length === METRICS.length ? "error" : "partial";
     result = { status, rows, error: errors.join("; ") || undefined };
     if (status !== "ok") await recordEvent(link.sid, status === "error" ? "error" : "warning", "sync", `History sync ${status}: ${result.error}`);
-    await pullAgentEvents(link).catch(() => 0); // keep the failure history even when nobody opens the page
+    // keep the failure history even when nobody opens the page, but never past the cron's time budget
+    if (Date.now() < (deadline ?? Infinity) - 5_000) await pullAgentEvents(link).catch(() => 0);
   } catch (e) {
     result = { status: "error", rows: 0, error: (e as Error).message };
   }

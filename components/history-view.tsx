@@ -229,8 +229,11 @@ export function HistoryView({ owner = false }: { owner?: boolean }) {
         from={from}
         to={to}
         onPreset={(k) => {
-          setNow(minute());
-          setRange({ range: k });
+          // both in one transition: otherwise an intermediate render (new now, old range) fetches the old range
+          startTransition(() => {
+            setNow(minute());
+            setRange({ range: k });
+          });
         }}
         onRange={zoom}
       />

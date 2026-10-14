@@ -432,7 +432,7 @@ export function SeriesChart({
   useEffect(() => {
     const el = wrap.current;
     if (!el || !has) return;
-    const ro = new ResizeObserver(() => {
+    const measure = () => {
       const rem =
         parseFloat(getComputedStyle(document.documentElement).fontSize) || 16;
       const w = el.clientWidth;
@@ -440,7 +440,14 @@ export function SeriesChart({
       setSize((s) =>
         s && s.w === w && s.h === h && s.rem === rem ? s : { w, h, rem },
       );
-    });
+    };
+    if (typeof ResizeObserver === "undefined") {
+      // older TV and kiosk browsers: measure once and on window resize
+      requestAnimationFrame(measure);
+      window.addEventListener("resize", measure);
+      return () => window.removeEventListener("resize", measure);
+    }
+    const ro = new ResizeObserver(measure);
     ro.observe(el);
     return () => ro.disconnect();
   }, [has]);

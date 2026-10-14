@@ -226,7 +226,10 @@ func (p *Pulse) loadUsers() {
 
 // Frame builds one frame. withDisks / withProcs / withMHz pace the expensive parts.
 func (p *Pulse) Frame(now float64, seq uint64, withDisks, withProcs, withMHz, keyframe bool) Frame {
-	f := Frame{Seq: seq, T: int64(now)}
+	// empty lists are "[]", never "null": the dashboard reads them as arrays (a container or VM can have no
+	// physical disk or NIC at all)
+	f := Frame{Seq: seq, T: int64(now), IO: []DiskIO{}, Net: []NIC{}}
+	f.CPU.Cores = []int{}
 	f.Boot = readTrim(p.path("proc/sys/kernel/random/boot_id"))
 	f.Up = int64(parseUptime(readFile(p.path("proc/uptime"))))
 	if l := parseLoadavg(readFile(p.path("proc/loadavg"))); l != nil {
