@@ -3,7 +3,13 @@
 import Link from "next/link";
 import { memo, useCallback, useEffect, useState } from "react";
 import { RingBuffer } from "@/lib/algo";
-import { DEFS, METRICS, type Dims, type Metric, type Point } from "@/lib/charts";
+import {
+  DEFS,
+  METRICS,
+  type Dims,
+  type Metric,
+  type Point,
+} from "@/lib/charts";
 import type { ServerInfo, Snapshot } from "@/lib/netdata";
 import { frameValues, type PulseFrame } from "@/lib/pulse";
 import type { Usage } from "@/lib/usage";
@@ -14,8 +20,21 @@ import { useAgentStream } from "./use-agent-stream";
 import { usePoll } from "./use-poll";
 
 type Live =
-  | { mode: "live" | "demo"; intervalMs: number; tunnel: string | null; info: ServerInfo | null; snapshot?: Snapshot; btopUrl?: string }
-  | { mode: "offline"; intervalMs: number; tunnel: string; error: string; lastSeen: number | null }
+  | {
+      mode: "live" | "demo";
+      intervalMs: number;
+      tunnel: string | null;
+      info: ServerInfo | null;
+      snapshot?: Snapshot;
+      btopUrl?: string;
+    }
+  | {
+      mode: "offline";
+      intervalMs: number;
+      tunnel: string;
+      error: string;
+      lastSeen: number | null;
+    }
   | { mode: "paused"; intervalMs: number; tunnel: string; usage: Usage }
   | { mode: "error"; intervalMs: number; error: string }
   | { mode: "connect"; intervalMs: number };
@@ -48,30 +67,62 @@ function windowed(): Map<Metric, Point[]> {
   for (const [m, b] of store.buffers) {
     const all = b.toArray();
     const end = all[all.length - 1]?.t ?? 0;
-    out.set(m, all.filter((p) => p.t > end - WINDOW));
+    out.set(
+      m,
+      all.filter((p) => p.t > end - WINDOW),
+    );
   }
   return out;
 }
 
 type Level = "ok" | "warn" | "crit";
 function level(m: Metric, v: Dims, cores: number | null): Level {
-  const x = m === "cpu" ? v.cpu : m === "ram" || m === "disk" ? v.pct : m === "load" ? v.load1 : m === "temp" ? v.max : 0;
-  const [warn, crit] = m === "temp" ? [70, 85] : m === "load" ? [cores ?? 1, (cores ?? 1) * 2] : m === "net" ? [Infinity, Infinity] : [75, 90];
+  const x =
+    m === "cpu"
+      ? v.cpu
+      : m === "ram" || m === "disk"
+        ? v.pct
+        : m === "load"
+          ? v.load1
+          : m === "temp"
+            ? v.max
+            : 0;
+  const [warn, crit] =
+    m === "temp"
+      ? [70, 85]
+      : m === "load"
+        ? [cores ?? 1, (cores ?? 1) * 2]
+        : m === "net"
+          ? [Infinity, Infinity]
+          : [75, 90];
   return (x ?? 0) >= crit ? "crit" : (x ?? 0) >= warn ? "warn" : "ok";
 }
-const LEVEL_TEXT: Record<Level, string> = { ok: "", warn: "High", crit: "Critical" };
-const LEVEL_CLASS: Record<Level, string> = { ok: "text-signal", warn: "text-warn", crit: "text-crit" };
+const LEVEL_TEXT: Record<Level, string> = {
+  ok: "",
+  warn: "⚠ High",
+  crit: "⚠ Critical",
+};
+const LEVEL_CLASS: Record<Level, string> = {
+  ok: "text-signal",
+  warn: "text-warn",
+  crit: "text-crit",
+};
 
-const SPARK_SERIES: Record<Metric, { key: string; label: string; unit: string }[]> = {
+const SPARK_SERIES: Record<
+  Metric,
+  { key: string; label: string; unit: string }[]
+> = {
   cpu: [{ key: "cpu", label: "CPU", unit: "%" }],
-  ram: [{ key: "pct", label: "RAM", unit: "%" }],
+  ram: [{ key: "pct", label: "Memory", unit: "%" }],
   load: [{ key: "load1", label: "Load", unit: "" }],
   disk: [{ key: "pct", label: "Disk", unit: "%" }],
   net: [{ key: "in", label: "In", unit: "kbit/s" }],
   temp: [{ key: "max", label: "Temp", unit: "°C" }],
   io: [],
 };
-const CHART_SERIES: Partial<Record<Metric, { key: string; label: string; unit: string }[]>> = {
+const CHART_SERIES: Partial<
+  Record<Metric, { key: string; label: string; unit: string }[]>
+> = {
   cpu: DEFS.cpu.series,
   ram: DEFS.ram.series.slice(0, 1),
   io: DEFS.io.series,
@@ -103,7 +154,15 @@ function Ago({ t }: { t: number | null }) {
   return <>{since(t, now)}</>;
 }
 
-function Big({ n, unit, digits = 0 }: { n: number | undefined; unit: string; digits?: number }) {
+function Big({
+  n,
+  unit,
+  digits = 0,
+}: {
+  n: number | undefined;
+  unit: string;
+  digits?: number;
+}) {
   return (
     // sized by the tile (container query), not the screen: never wider than its tile
     <p className="whitespace-nowrap font-cond text-[clamp(1.75rem,16cqi,2.5rem)] font-semibold leading-none tracking-tight tabular-nums">
@@ -113,8 +172,17 @@ function Big({ n, unit, digits = 0 }: { n: number | undefined; unit: string; dig
   );
 }
 
-function KpiValue({ m, v, info }: { m: Metric; v: Dims | undefined; info: ServerInfo | null }) {
-  if (!v) return <p className="font-cond text-4xl font-semibold text-muted">—</p>;
+function KpiValue({
+  m,
+  v,
+  info,
+}: {
+  m: Metric;
+  v: Dims | undefined;
+  info: ServerInfo | null;
+}) {
+  if (!v)
+    return <p className="font-cond text-4xl font-semibold text-muted">—</p>;
   switch (m) {
     case "cpu":
       return <Big n={v.cpu} unit="%" />;
@@ -123,7 +191,8 @@ function KpiValue({ m, v, info }: { m: Metric; v: Dims | undefined; info: Server
         <>
           <Big n={v.pct} unit="%" />
           <p className="mt-1 text-xs text-muted">
-            {fmtNum(v.usedGiB, "GiB")} of {info?.ramGiB ? `${info.ramGiB} GiB` : "total"}
+            {fmtNum(v.usedGiB, "GiB")} of{" "}
+            {info?.ramGiB ? `${info.ramGiB} GiB` : "total"}
           </p>
         </>
       );
@@ -141,7 +210,9 @@ function KpiValue({ m, v, info }: { m: Metric; v: Dims | undefined; info: Server
       return (
         <>
           <Big n={v.pct} unit="%" />
-          <p className="mt-1 text-xs text-muted">{fmtNum(v.usedGiB, "GiB")} used on /</p>
+          <p className="mt-1 text-xs text-muted">
+            {fmtNum(v.usedGiB, "GiB")} used on /
+          </p>
         </>
       );
     case "net":
@@ -149,11 +220,19 @@ function KpiValue({ m, v, info }: { m: Metric; v: Dims | undefined; info: Server
         <div className="space-y-1">
           <p className="whitespace-nowrap font-cond text-[clamp(1rem,10cqi,1.5rem)] font-semibold leading-none tabular-nums">
             <span className="text-[0.6em] font-medium text-muted">In </span>
-            <AnimatedNumber value={(v.in ?? 0) / 1000} digits={(v.in ?? 0) >= 100_000 ? 1 : 2} /> <span className="text-[0.6em] text-muted">Mbit/s</span>
+            <AnimatedNumber
+              value={(v.in ?? 0) / 1000}
+              digits={(v.in ?? 0) >= 100_000 ? 1 : 2}
+            />{" "}
+            <span className="text-[0.6em] text-muted">Mbit/s</span>
           </p>
           <p className="whitespace-nowrap font-cond text-[clamp(1rem,10cqi,1.5rem)] font-semibold leading-none tabular-nums">
             <span className="text-[0.6em] font-medium text-muted">Out </span>
-            <AnimatedNumber value={(v.out ?? 0) / 1000} digits={(v.out ?? 0) >= 100_000 ? 1 : 2} /> <span className="text-[0.6em] text-muted">Mbit/s</span>
+            <AnimatedNumber
+              value={(v.out ?? 0) / 1000}
+              digits={(v.out ?? 0) >= 100_000 ? 1 : 2}
+            />{" "}
+            <span className="text-[0.6em] text-muted">Mbit/s</span>
           </p>
         </div>
       );
@@ -164,20 +243,40 @@ function KpiValue({ m, v, info }: { m: Metric; v: Dims | undefined; info: Server
   }
 }
 
-const KpiTile = memo(function KpiTile({ m, v, pts, info }: { m: Metric; v: Dims | undefined; pts: Point[]; info: ServerInfo | null }) {
+const KpiTile = memo(function KpiTile({
+  m,
+  v,
+  pts,
+  info,
+}: {
+  m: Metric;
+  v: Dims | undefined;
+  pts: Point[];
+  info: ServerInfo | null;
+}) {
   const lv = v ? level(m, v, info?.cores ?? null) : "ok";
   const end = pts[pts.length - 1]?.t ?? 0;
   const spark = pts.filter((p) => p.t > end - SPARK - 4);
   return (
-    <Link
-      href={`/history?range=24h#${m}`}
-      prefetch
-      className="group @container flex min-w-0 flex-col justify-between gap-3 rounded-xl border border-line bg-surface p-4 transition-colors hover:border-signal"
-    >
-      <span className="sr-only">Open 24-hour history.</span>
+    // one link, on the heading, stretched over the whole tile: the tile stays one big click target, but the
+    // link's name stays "CPU, 24-hour history" instead of changing with the number every second
+    <article className="group @container relative flex min-w-0 flex-col gap-3 rounded-xl border border-line bg-surface p-4 transition-colors hover:border-signal">
       <header className="flex min-w-0 flex-wrap items-baseline justify-between gap-x-2">
-        <h2 className="truncate text-sm font-medium text-muted group-hover:text-ink">{m === "disk" ? "Disk" : DEFS[m].label}</h2>
-        {LEVEL_TEXT[lv] && <span className={`shrink-0 text-xs font-semibold ${LEVEL_CLASS[lv]}`}>{LEVEL_TEXT[lv]}</span>}
+        <h2 className="truncate text-sm font-medium text-muted group-hover:text-ink">
+          <Link
+            href={`/history?range=24h#${m}`}
+            prefetch
+            className="outline-none after:absolute after:inset-0 after:rounded-xl focus-visible:after:outline-2 focus-visible:after:outline-offset-2 focus-visible:after:outline-signal"
+          >
+            {m === "disk" ? "Disk" : DEFS[m].label}
+            <span className="sr-only">, 24-hour history</span>
+          </Link>
+        </h2>
+        {LEVEL_TEXT[lv] && (
+          <span className={`shrink-0 text-xs font-semibold ${LEVEL_CLASS[lv]}`}>
+            {LEVEL_TEXT[lv]}
+          </span>
+        )}
       </header>
       <KpiValue m={m} v={v} info={info} />
       <LiveChart
@@ -187,9 +286,9 @@ const KpiTile = memo(function KpiTile({ m, v, pts, info }: { m: Metric; v: Dims 
         height={40}
         compact
         yMax={m === "cpu" || m === "ram" || m === "disk" ? 100 : undefined}
-        className={LEVEL_CLASS[lv]}
+        className={`mt-auto ${LEVEL_CLASS[lv]}`}
       />
-    </Link>
+    </article>
   );
 });
 
@@ -208,7 +307,11 @@ export function LiveView() {
 
   // readings stream straight from the agent when it can (1 s, no dashboard request per reading)
   const onFrame = useCallback((f: PulseFrame) => {
-    const s = { t: f.t, uptimeSec: f.up, values: frameValues(f) } as unknown as Snapshot;
+    const s = {
+      t: f.t,
+      uptimeSec: f.up,
+      values: frameValues(f),
+    } as unknown as Snapshot;
     pushSnapshot(s);
     setStreamSnap(s);
     setView(windowed());
@@ -217,21 +320,28 @@ export function LiveView() {
 
   // while streaming, the dashboard is only asked for status and server info every 30 s (no upstream
   // request); when the stream drops, the URL changes and normal polling resumes at once
-  const { data, error } = usePoll<Live>(streaming ? "/api/live?lite=1" : "/api/live", 2000, {
-    initial: store.last,
-    nextInterval: (d) => d.intervalMs,
-    onData: (d) => {
-      setLive(d.mode === "live");
-      if (!("snapshot" in d) || !d.snapshot) {
-        if (store.last && "snapshot" in store.last && d.mode === "live") store.last = { ...d, snapshot: store.last.snapshot };
-        return;
-      }
-      store.last = d;
-      pushSnapshot(d.snapshot);
-      setView(windowed());
+  const { data, error } = usePoll<Live>(
+    streaming ? "/api/live?lite=1" : "/api/live",
+    2000,
+    {
+      initial: store.last,
+      nextInterval: (d) => d.intervalMs,
+      onData: (d) => {
+        setLive(d.mode === "live");
+        if (!("snapshot" in d) || !d.snapshot) {
+          if (store.last && "snapshot" in store.last && d.mode === "live")
+            store.last = { ...d, snapshot: store.last.snapshot };
+          return;
+        }
+        store.last = d;
+        pushSnapshot(d.snapshot);
+        setView(windowed());
+      },
     },
-  });
-  const snap = (streaming && streamSnap) || (data && "snapshot" in data ? (data.snapshot ?? null) : null);
+  );
+  const snap =
+    (streaming && streamSnap) ||
+    (data && "snapshot" in data ? (data.snapshot ?? null) : null);
 
   // LIV-2: seed the last 5 minutes once per page load, so charts and sparklines start full
   const canSeed = data?.mode === "live" || data?.mode === "demo";
@@ -241,10 +351,15 @@ export function LiveView() {
     store.seeded = true;
     const to = Math.floor(Date.now() / 1000);
     // ngrok budget mode: seed only the four charts to save requests
-    const metrics = tunnel === "ngrok" ? CHARTED : METRICS.filter((m) => CHARTED.includes(m) || KPIS.includes(m));
+    const metrics =
+      tunnel === "ngrok"
+        ? CHARTED
+        : METRICS.filter((m) => CHARTED.includes(m) || KPIS.includes(m));
     Promise.all(
       metrics.map(async (m) => {
-        const r = await fetch(`/api/history?chart=${m}&from=${to - WINDOW}&to=${to}&points=150`).catch(() => null);
+        const r = await fetch(
+          `/api/history?chart=${m}&from=${to - WINDOW}&to=${to}&points=150`,
+        ).catch(() => null);
         if (!r?.ok) return;
         const { points } = (await r.json()) as { points: Point[] };
         const fresh = buf(m).toArray();
@@ -261,16 +376,26 @@ export function LiveView() {
   const latestT = snap?.t ?? (data?.mode === "offline" ? data.lastSeen : null);
   if (!data && !error)
     return (
-      <div className="space-y-6" aria-busy="true" aria-label="Connecting to your server">
+      <div
+        className="space-y-6"
+        aria-busy="true"
+        aria-label="Connecting to your server"
+      >
         <div className="h-12 w-56 animate-pulse rounded-lg bg-surface" />
-        <div className="grid grid-cols-1 gap-3 min-[400px]:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6">
+        <div className="grid grid-cols-1 gap-3 min-[340px]:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6">
           {KPIS.map((m) => (
-            <div key={m} className="h-40 animate-pulse rounded-xl border border-line bg-surface" />
+            <div
+              key={m}
+              className="h-40 animate-pulse rounded-xl border border-line bg-surface"
+            />
           ))}
         </div>
         <div className="grid gap-3 md:grid-cols-2 2xl:grid-cols-4">
           {CHARTED.map((m) => (
-            <div key={m} className="h-64 animate-pulse rounded-xl border border-line bg-surface" />
+            <div
+              key={m}
+              className="h-64 animate-pulse rounded-xl border border-line bg-surface"
+            />
           ))}
         </div>
       </div>
@@ -278,13 +403,21 @@ export function LiveView() {
   if (data?.mode === "connect")
     return (
       <section className="mx-auto mt-[8vh] max-w-xl rounded-xl border border-line bg-surface p-6 text-center sm:p-8">
-        <h1 className="text-2xl font-semibold tracking-tight">Add your server to start</h1>
-        <p className="mt-2 text-muted">Copy one command to your Ubuntu server and live vitals appear here within seconds.</p>
+        <h1 className="text-2xl font-semibold tracking-tight">
+          Add your server to start
+        </h1>
+        <p className="mt-2 text-muted">
+          Copy one command to your Ubuntu server and live vitals appear here
+          within seconds.
+        </p>
         <div className="mt-6 flex flex-col justify-center gap-2 sm:flex-row">
-          <Link href="/connect" prefetch className="rounded-lg bg-signal px-4 py-2.5 font-medium text-on-signal">
+          <Link
+            href="/connect"
+            prefetch
+            className="rounded-lg bg-signal px-4 py-2.5 font-medium text-on-signal"
+          >
             Add server
           </Link>
-
         </div>
       </section>
     );
@@ -293,10 +426,21 @@ export function LiveView() {
     <div className="space-y-6">
       <section className="flex flex-wrap items-end justify-between gap-3">
         <div className="min-w-0">
-          <h1 className="truncate text-2xl font-semibold tracking-tight">{info?.hostname ?? "Your server"}</h1>
+          <h1
+            className="truncate text-2xl font-semibold tracking-tight max-sm:whitespace-normal max-sm:break-all"
+            title={info?.hostname}
+          >
+            {info?.hostname ?? "Your server"}
+          </h1>
           <p className="text-sm text-muted">
-            {[info?.os, snap ? uptime(snap.uptimeSec) && `up ${uptime(snap.uptimeSec)}` : null].filter(Boolean).join(" · ") ||
-              "Ubuntu server"}
+            {[
+              info?.os,
+              snap
+                ? uptime(snap.uptimeSec) && `up ${uptime(snap.uptimeSec)}`
+                : null,
+            ]
+              .filter(Boolean)
+              .join(" · ") || "Ubuntu server"}
           </p>
         </div>
         <Status data={data} error={error} latestT={latestT} />
@@ -304,7 +448,8 @@ export function LiveView() {
 
       {data?.mode === "demo" && (
         <p className="rounded-lg border border-line bg-surface px-4 py-3 text-sm">
-          <strong className="font-medium">Demo data.</strong> These numbers are generated.{" "}
+          <strong className="font-medium">Demo data.</strong> These numbers are
+          generated.{" "}
           <Link className="text-signal underline" href="/connect" prefetch>
             Add your server
           </Link>{" "}
@@ -312,16 +457,37 @@ export function LiveView() {
         </p>
       )}
       {data?.mode === "offline" && (
-        <Notice tone="crit" title="Server offline">
-          Last reading <Ago t={data.lastSeen} />. {data.error?.replace(/\.$/, "")}. History stays safe: your server keeps 30 days of
-          readings and the next sync fills the gap.
+        <Notice tone="crit" title="Can't reach your server">
+          Last reading{" "}
+          {/* the ticking "37 s ago" is for the eye; screen readers get a fixed time, read once */}
+          <span aria-hidden>
+            <Ago t={data.lastSeen} />
+          </span>
+          <span className="sr-only">
+            at{" "}
+            {data.lastSeen
+              ? new Date(data.lastSeen * 1000).toLocaleTimeString()
+              : "an unknown time"}
+          </span>
+          . {data.error?.replace(/\.$/, "")}. Check that it is switched on and
+          online;{" "}
+          <Link href="/settings" className="text-signal underline">
+            Settings → Test connection
+          </Link>{" "}
+          shows the exact problem. Your history is safe: the server keeps 30
+          days and fills the gap when it&apos;s back.
         </Notice>
       )}
       {data?.mode === "paused" && (
-        <Notice tone="warn" title="Live view paused to protect your ngrok quota">
-          {data.usage.used.toLocaleString()} of {data.usage.limit.toLocaleString()} requests used this month. Live view resumes
-          on {new Date(data.usage.resetsAt).toLocaleDateString()}; the nightly sync keeps running. Switch to Tailscale Funnel to
-          remove the limit.
+        <Notice
+          tone="warn"
+          title="Live view paused to protect your ngrok quota"
+        >
+          {data.usage.used.toLocaleString()} of{" "}
+          {data.usage.limit.toLocaleString()} requests used this month. Live
+          view resumes on {new Date(data.usage.resetsAt).toLocaleDateString()};
+          the nightly sync keeps running. Switch to Tailscale Funnel to remove
+          the limit.
         </Notice>
       )}
       {data?.mode === "error" && (
@@ -334,21 +500,40 @@ export function LiveView() {
         </Notice>
       )}
 
-      <section aria-label="Current readings" className="grid grid-cols-1 gap-3 min-[400px]:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6">
+      <section
+        aria-label="Current readings"
+        className="grid grid-cols-1 gap-3 min-[340px]:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-6"
+      >
         {KPIS.map((m) => {
           const pts = view.get(m) ?? [];
-          return <KpiTile key={m} m={m} v={snap?.values[m] ?? pts[pts.length - 1]?.v} pts={pts} info={info} />;
+          return (
+            <KpiTile
+              key={m}
+              m={m}
+              v={snap?.values[m] ?? pts[pts.length - 1]?.v}
+              pts={pts}
+              info={info}
+            />
+          );
         })}
       </section>
 
-      <section aria-label="Last 5 minutes" className="grid grid-cols-1 gap-3 md:grid-cols-2 2xl:grid-cols-4">
+      <section
+        aria-label="Last 5 minutes"
+        className="grid grid-cols-1 gap-3 md:grid-cols-2 2xl:grid-cols-4"
+      >
         {CHARTED.map((m) => {
           const series = CHART_SERIES[m]!;
           return (
-            <article key={m} className="rounded-xl border border-line bg-surface p-4">
+            <article
+              key={m}
+              className="rounded-xl border border-line bg-surface p-4"
+            >
               <header className="mb-2 flex items-baseline justify-between gap-2">
                 <h2 className="font-medium">{DEFS[m].label}</h2>
-                <span className="text-xs text-muted">last 5 min · {series[0]?.unit}</span>
+                <span className="text-xs text-muted">
+                  last 5 min · {series[0]?.unit}
+                </span>
               </header>
               <LiveChart
                 points={view.get(m) ?? []}
@@ -366,9 +551,17 @@ export function LiveView() {
   );
 }
 
-function Status({ data, error, latestT }: { data: Live | null; error: string | null; latestT: number | null }) {
+function Status({
+  data,
+  error,
+  latestT,
+}: {
+  data: Live | null;
+  error: string | null;
+  latestT: number | null;
+}) {
   const [label, cls] = error
-    ? ["Dashboard unreachable", "text-crit"]
+    ? ["No internet connection", "text-crit"]
     : data?.mode === "live"
       ? ["Live", "text-ok"]
       : data?.mode === "demo"
@@ -380,13 +573,20 @@ function Status({ data, error, latestT }: { data: Live | null; error: string | n
   return (
     <div className="flex items-center gap-3 text-sm">
       {btop && (
-        <a href={btop} target="_blank" rel="noreferrer" className="rounded-md border border-line px-2.5 py-1 hover:bg-surface">
+        <a
+          href={btop}
+          target="_blank"
+          rel="noreferrer"
+          className="rounded-md border border-line px-2.5 py-1 hover:bg-surface"
+        >
           Open btop
         </a>
       )}
       <span className={`flex items-center gap-1.5 font-medium ${cls}`}>
         <span className="relative flex size-2.5">
-          {data?.mode === "live" && !error && <span className="absolute inset-0 animate-ping rounded-full bg-current opacity-50" />}
+          {data?.mode === "live" && !error && (
+            <span className="absolute inset-0 animate-ping rounded-full bg-current opacity-50 [animation-iteration-count:3]" />
+          )}
           <span className="relative size-2.5 rounded-full bg-current" />
         </span>
         {/* only the state is announced; the ticking "updated" text is not, so screen readers aren't spammed */}
@@ -403,11 +603,27 @@ function Status({ data, error, latestT }: { data: Live | null; error: string | n
   );
 }
 
-function Notice({ tone, title, children }: { tone: "warn" | "crit"; title: string; children: React.ReactNode }) {
+function Notice({
+  tone,
+  title,
+  children,
+}: {
+  tone: "warn" | "crit";
+  title: string;
+  children: React.ReactNode;
+}) {
   return (
-    <div role="alert" className={`rounded-lg border bg-surface px-4 py-3 text-sm ${tone === "crit" ? "border-crit/50" : "border-warn/50"}`}>
-      <p className={`font-medium ${tone === "crit" ? "text-crit" : "text-warn"}`}>{title}</p>
-      <p className="mt-1 text-ink/90">{children}</p>
+    // status (polite), not alert: it is re-rendered while it shows and must not be re-announced each time
+    <div
+      role="status"
+      className={`rounded-lg border bg-surface px-4 py-3 text-sm ${tone === "crit" ? "border-crit-line" : "border-warn-line"}`}
+    >
+      <p
+        className={`font-medium ${tone === "crit" ? "text-crit" : "text-warn"}`}
+      >
+        {title}
+      </p>
+      <p className="mt-1 text-ink">{children}</p>
     </div>
   );
 }
