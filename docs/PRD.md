@@ -683,6 +683,7 @@ Found on the owner's server: Tailscale Funnel stopped passing connections. The T
   - It now calls its own public address the way the dashboard will, before pairing. It waits up to 90 s, because a new Funnel address gets its certificate on the first request.
   - Pairing goes ahead either way, at most about 2 minutes later, well inside the code's 10 minutes.
   - If the address still fails, it says why in plain words (connection cut, name not in DNS, refused, timeout). It then lists read-only checks for the tunnel in use: `tailscale status`, `tailscale funnel status` (the current lines are printed), or the ngrok command.
+- **Pairing retries**: while the dashboard can't reach the server yet (Funnel being allowed, a new certificate, a network blip), the installer tries again every 15 s for up to 4 minutes, well inside the code's 10 minutes. It stops at once on a final answer (wrong, expired or used code). Tested end to end: two refusals, then paired on the third try.
 - **`server-pulse-agent status`** (with sudo) runs the same check, so one command shows whether the dashboard can reach the server.
 - **Funnel watchdog** (`server-pulse-funnel.timer`, root, every 10 minutes). It is installed only when the agent is published through this machine's own Tailscale.
   - If the agent's Funnel is missing and its port is free, it turns it on again (e.g. after `tailscale serve reset`, `tailscale up --reset` or a Tailscale reinstall).

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os/exec"
 	"strings"
@@ -14,6 +15,24 @@ import (
 // Before pairing, the installer calls that address the way the dashboard will, so a tunnel that doesn't
 // pass connections is explained right here, in plain words, instead of surfacing later as a bare
 // "ECONNRESET" on the Add server page.
+
+// Pairing retries while the dashboard can't reach this server yet: 16 × 15 s = 4 minutes, well inside the
+// code's 10 minutes.
+const (
+	pairRetries    = 16
+	pairRetryEvery = 15 * time.Second
+)
+
+// pairRetryable: worth trying again (the dashboard couldn't reach this server, or this server couldn't
+// reach the dashboard), as opposed to a final answer such as a wrong or used code.
+func pairRetryable(err error) bool {
+	m := strings.ToLower(err.Error())
+	if strings.Contains(m, "can't reach your server") {
+		return true
+	}
+	var ne net.Error
+	return errors.As(err, &ne) || strings.Contains(m, "connection reset") || strings.Contains(m, "eof")
+}
 
 // reachWait: a brand-new Funnel address gets its HTTPS certificate on its first request (10-20 s).
 const reachWait = 90 * time.Second

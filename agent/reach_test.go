@@ -42,6 +42,19 @@ func TestProbePublicAcceptsOnlyTheAgent(t *testing.T) {
 	}
 }
 
+func TestPairRetriesOnlyWhatCanRecover(t *testing.T) {
+	for msg, want := range map[string]bool{
+		"The dashboard can't reach your server yet: Cannot reach antpc.ts.net: ECONNRESET": true,
+		"This pairing code is wrong, expired or already used":                              false,
+		"This pairing code was just used. Get a new one from Add server.":                  false,
+		"read tcp 1.2.3.4:443: connection reset by peer":                                   true,
+	} {
+		if got := pairRetryable(errors.New(msg)); got != want {
+			t.Fatalf("%q: retry %v, want %v", msg, got, want)
+		}
+	}
+}
+
 func TestPlainNetErrAndCleanLine(t *testing.T) {
 	if m := plainNetErr(errors.New("read tcp 1.2.3.4:443: connection reset by peer")); !strings.HasPrefix(m, "the connection was cut") {
 		t.Fatalf("reset: %q", m)
